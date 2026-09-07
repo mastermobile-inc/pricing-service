@@ -54,6 +54,10 @@ def check_order_payment(payload: OrderPaymentCheckRequest) -> OrderPaymentCheckR
             closure_blocks_payment=settings.order_payment_control_closure_blocks_payment,
             closure_allowed_reasons=settings.order_payment_control_closure_allowed_reasons,
             confirmed_ready_at_resolver=_confirmed_ready_at,
+            allow_document_coverage=(
+                settings.order_payment_control_document_coverage_enabled
+                and payload.protection_profile == "minimal_v1"
+            ),
         )
     except DatabaseNotConfiguredError as exc:
         logger.warning(
@@ -67,7 +71,10 @@ def check_order_payment(payload: OrderPaymentCheckRequest) -> OrderPaymentCheckR
             status_code=503,
             detail={"code": "onec_unavailable", "message": "1C source is unavailable"},
         ) from exc
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, ConnectionError, TimeoutError) as exc:
+        # pytds may propagate raw socket errors during pool pre-ping/connect or
+        # query execution. They must deny payment just like wrapped DB errors;
+        # a subsequent request will perform its own fresh reservation check.
         logger.warning(
             "order payment check denied: 1C query failed",
             extra={

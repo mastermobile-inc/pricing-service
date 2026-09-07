@@ -75,6 +75,7 @@ class OrderPaymentDecision:
     onec_posted: bool | None = None
     onec_closure_document: str | None = None
     onec_closure_reason: str | None = None
+    fulfillment_state: str = "UNCONFIRMED"
     reservation_state: str = "MISMATCH"
     reservation_quantity_match: bool = False
     source_warehouse_xml_id: str | None = None
@@ -142,15 +143,16 @@ ONEC_ORDER_RESERVES_SQL_TEMPLATE = """
         r._Fld7655RRef AS product_ref,
         r._Fld7656RRef AS characteristic_ref,
         r._Fld7658RRef AS series_ref,
-        SUM(r._Fld7659) AS reserve_quantity
-    FROM dbo._AccumRgT7662 AS r
-    WHERE r._Fld7657_RTRef = 0x00000084
+        SUM(CASE WHEN r._RecordKind=0 THEN r._Fld7659 ELSE -r._Fld7659 END) AS reserve_quantity
+    FROM dbo._AccumRg7653 AS r
+    WHERE r._Active = 0x01 AND r._Fld7657_RTRef = 0x00000084
       AND r._Fld7657_RRRef = 0x{order_ref_hex}
     GROUP BY
         r._Fld7654RRef,
         r._Fld7655RRef,
         r._Fld7656RRef,
         r._Fld7658RRef
+    HAVING SUM(CASE WHEN r._RecordKind=0 THEN r._Fld7659 ELSE -r._Fld7659 END) <> 0
     """
 
 CONFIRMED_READY_AT_SQL = text("""
@@ -159,6 +161,12 @@ CONFIRMED_READY_AT_SQL = text("""
     INNER JOIN order_assembly_queue_sync_state AS s
         ON s.source = 'bitrix_deal'
     WHERE q.order_number = :site_order_number
+      AND NOT EXISTS (
+          SELECT 1
+          FROM order_assembly_queue_item AS duplicate
+          WHERE duplicate.order_number = q.order_number
+            AND duplicate.deal_id <> q.deal_id
+      )
       AND q.crm_stage = 'EXECUTING'
       AND q.assembly_due_at IS NOT NULL
       AND q.synced_at >= :fresh_after
@@ -443,6 +451,7 @@ def _check_order_payment_on_source(
     closure_blocks_payment: bool = True,
     closure_allowed_reasons: list[str] | None = None,
     confirmed_ready_at_resolver: Callable[[str, datetime], datetime | None] | None = None,
+    allow_document_coverage: bool = False,
 ) -> OrderPaymentDecision:
     normalized_site_amount = normalize_money(site_amount)
     normalized_payment_amount = normalize_money(payment_amount)
@@ -596,6 +605,34 @@ def _check_order_payment_on_source(
         reserves,
         expected_warehouse_ref=expected_warehouse_ref,
     )
+    if allow_document_coverage:
+        from app.services.order_document_evidence import fetch_document_coverage
+
+        proof = fetch_document_coverage(
+            source,
+            order_ref=snapshot.order_ref,
+            lines=lines,
+            reserves=reserves,
+            expected_warehouse_ref=expected_warehouse_ref,
+        )
+        if proof.covered or proof.reason != "document_sales_missing":
+            return _decision_from_snapshot(
+                snapshot,
+                check_id=check_id,
+                allowed=proof.covered,
+                reason=(
+                    "amount_and_full_document_coverage_match"
+                    if proof.covered
+                    else "onec_document_coverage_unconfirmed"
+                ),
+                site_order_number=site_order_number,
+                site_amount=normalized_site_amount,
+                payment_amount=normalized_payment_amount,
+                checked_at=checked_at,
+                reservation_state=reservation_state,
+                reservation_quantity_match=quantity_match,
+                fulfillment_state="DOCUMENTED" if proof.covered else "UNCONFIRMED",
+            )
     if reservation_state != "FULL":
         return _decision_from_snapshot(
             snapshot,
@@ -639,6 +676,7 @@ def check_order_payment(
     closure_blocks_payment: bool = True,
     closure_allowed_reasons: list[str] | None = None,
     confirmed_ready_at_resolver: Callable[[str, datetime], datetime | None] | None = None,
+    allow_document_coverage: bool = False,
 ) -> OrderPaymentDecision:
     """Read one internally consistent 1C snapshot, then resolve nullable CRM readiness."""
     normalized_site_amount = normalize_money(site_amount)
@@ -681,6 +719,7 @@ def check_order_payment(
                 closure_blocks_payment=closure_blocks_payment,
                 closure_allowed_reasons=closure_allowed_reasons,
                 confirmed_ready_at_resolver=None,
+                allow_document_coverage=allow_document_coverage,
             )
 
     if not decision.allowed or confirmed_ready_at_resolver is None:
@@ -724,6 +763,7 @@ def _decision(
     onec_posted: bool | None = None,
     onec_closure_document: str | None = None,
     onec_closure_reason: str | None = None,
+    fulfillment_state: str = "UNCONFIRMED",
     reservation_state: str = "MISMATCH",
     reservation_quantity_match: bool = False,
     source_warehouse_xml_id: str | None = None,
@@ -744,6 +784,7 @@ def _decision(
         onec_posted=onec_posted,
         onec_closure_document=onec_closure_document,
         onec_closure_reason=onec_closure_reason,
+        fulfillment_state=fulfillment_state,
         reservation_state=reservation_state,
         reservation_quantity_match=reservation_quantity_match,
         source_warehouse_xml_id=source_warehouse_xml_id,
