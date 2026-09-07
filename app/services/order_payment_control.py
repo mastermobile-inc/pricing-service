@@ -159,6 +159,12 @@ CONFIRMED_READY_AT_SQL = text("""
     INNER JOIN order_assembly_queue_sync_state AS s
         ON s.source = 'bitrix_deal'
     WHERE q.order_number = :site_order_number
+      AND NOT EXISTS (
+          SELECT 1
+          FROM order_assembly_queue_item AS duplicate
+          WHERE duplicate.order_number = q.order_number
+            AND duplicate.deal_id <> q.deal_id
+      )
       AND q.crm_stage = 'EXECUTING'
       AND q.assembly_due_at IS NOT NULL
       AND q.synced_at >= :fresh_after

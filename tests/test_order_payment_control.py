@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 
 from app.api import order_payment_control as api
 from app.api.dependencies import require_order_payment_control_internal_token
 from app.core.config import get_settings
 from app.infrastructure.db.engines import DatabaseNotConfiguredError
+from app.models.order_assembly_queue import OrderAssemblyQueueItem, OrderAssemblyQueueSyncState
 from app.schemas.order_payment_control import OrderPaymentCheckRequest
 from app.services import order_payment_control as service
 
@@ -25,6 +27,112 @@ CHARACTERISTIC_REF = b"c" * 16
 SERIES_REF = b"s" * 16
 UNIT_REF = b"u" * 16
 ZERO_REF = bytes(16)
+
+
+@pytest.mark.parametrize(
+    "second_kind", [None, "valid", "no_due", "stale", "other_stage", "unrelated"]
+)
+@pytest.mark.parametrize(
+    "row_age,state_age,has_due",
+    [
+        (0, 0, True),
+        (600, 600, True),
+        (601, 0, True),
+        (0, 601, True),
+        (0, None, True),
+        (0, 0, False),
+    ],
+)
+def test_ready_time_checks_all_matching_queue_rows_before_filtering(
+    second_kind,
+    row_age,
+    state_age,
+    has_due,
+) -> None:
+    now = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    engine = create_engine("sqlite:///:memory:")
+    items = OrderAssemblyQueueItem.__table__
+    states = OrderAssemblyQueueSyncState.__table__
+    try:
+        items.create(engine)
+        states.create(engine)
+        with engine.begin() as connection:
+            if state_age is not None:
+                connection.execute(
+                    states.insert().values(
+                        source="bitrix_deal",
+                        last_success_at=now - timedelta(seconds=state_age),
+                    )
+                )
+            row = dict(
+                deal_id=1,
+                order_number="T3520-CRM",
+                crm_stage="EXECUTING",
+                stage_entered_at=now,
+                assembly_due_at=now + timedelta(hours=2) if has_due else None,
+                synced_at=now - timedelta(seconds=row_age),
+                evidence_id="test-only",
+            )
+            connection.execute(items.insert().values(**row))
+            if second_kind is not None:
+                second = dict(row, deal_id=2)
+                if second_kind == "no_due":
+                    second["assembly_due_at"] = None
+                elif second_kind == "stale":
+                    second["synced_at"] = now - timedelta(minutes=11)
+                elif second_kind == "other_stage":
+                    second["crm_stage"] = "NEW"
+                elif second_kind == "unrelated":
+                    second["order_number"] = "T3520-OTHER"
+                connection.execute(items.insert().values(**second))
+            values = list(
+                connection.execute(
+                    service.CONFIRMED_READY_AT_SQL,
+                    {"site_order_number": "T3520-CRM", "fresh_after": now - timedelta(minutes=10)},
+                ).scalars()
+            )
+            # Test the actual SQL, not a mocked result that conceals early filtering.
+            expected = (
+                second_kind in (None, "unrelated")
+                and row_age <= 600
+                and state_age is not None
+                and state_age <= 600
+                and has_due
+            )
+            assert (len(values) == 1) is expected
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "invalid",
+        datetime(2026, 9, 7, 12),
+        datetime(2026, 9, 7, 12, tzinfo=timezone.utc),
+        datetime(2026, 9, 7, 15, tzinfo=timezone(timedelta(hours=3))),
+    ],
+)
+def test_ready_time_resolver_normalizes_datetime_only(value) -> None:
+    class Result:
+        def scalars(self):
+            return [value]
+
+    class Source:
+        def execute(self, statement, params):
+            assert statement is service.CONFIRMED_READY_AT_SQL
+            return Result()
+
+    actual = service.fetch_confirmed_ready_at(
+        Source(),
+        site_order_number="T3520-CRM",
+        checked_at=datetime.now(timezone.utc),
+    )
+    expected = (
+        datetime(2026, 9, 7, 12, tzinfo=timezone.utc) if isinstance(value, datetime) else None
+    )
+    assert actual == expected
 
 
 class _Mappings:
