@@ -21,10 +21,10 @@ allowed_paths:
   - docs/phases/order-payment-control-test-only-final-audit.yml
   - docs/evidence/order-payment-control-test-only-final-audit.yml
 approval:
-  status: pending
-  approved_by: null
-  approved_at: null
-  source: Требуется отдельное подтверждение финальной фазы; предыдущие test-only действия разрешены в задаче №3484, но точный timestamp нового фазового approval не установлен.
+  status: approved
+  approved_by: user
+  approved_at: "2026-09-07T16:54:29Z"
+  source: docs/specs/order-payment-control-api.md#завершение-тестовой-приёмки-2026-09-07
 verification:
   - id: runtime-guard-regression
     command: /opt/MM/pricing-service/.venv/bin/python -m pytest -q -o pythonpath=/opt/MM/.worktrees/task-3520-pricing-review -o addopts='' tests/test_order_payment_control.py tests/test_order_payment_ready_sql.py
@@ -36,10 +36,10 @@ verification:
     command: /opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check
     expected_result: В cwd тестового backend OpenAPI соответствует фактической схеме.
   - id: runtime-full-tests
-    command: /opt/MM/pricing-service/.venv/bin/python -m pytest -o pythonpath=/opt/MM/.worktrees/task-3520-pricing-review
+    command: TMPDIR=/dev/shm/mm3520-pytest-OXlSCA /opt/MM/pricing-service/.venv/bin/python -m pytest -rs --basetemp=/dev/shm/m3520-HjcK -o pythonpath=/opt/MM/.worktrees/task-3520-pricing-review
     expected_result: Полный pytest тестовой версии завершается с exit code 0; пропуски разобраны отдельно.
   - id: dev-deny-readback
     command: ssh -o BatchMode=yes root@5.129.253.42 '/usr/local/sbin/mm-dev-php /var/tmp/mm3520-isolated-check-wXPmKn/check-ui-guard.php'
     expected_result: Только заказ 239891 / T3520UI239891, payment215226; paid=N, allowed=false, reason=onec_order_unposted, confirmed_ready_at=null.
 stop_condition: Сохранить результаты и остановиться; production-пилот, ротация production credential и реальные финансовые действия требуют отдельного разрешения.
-status: planned
+status: completed

@@ -20,6 +20,11 @@ depends_on:
   - docs/IntegrationContract.OrderAssemblyQueue1C.md
 supersedes: []
 rollout_required: true
+delivery_control:
+  risk: medium
+  phase_records: [docs/phases/order-payment-control-test-only-final-audit.yml]
+  evidence_records: [docs/evidence/order-payment-control-test-only-final-audit.yml]
+  review_records: []
 updated_at: "2026-09-07"
 ---
 
@@ -249,8 +254,32 @@ updated_at: "2026-09-07"
 ручной обработки; существующие резервы не снимать и старую небезопасную оплату не
 возвращать.
 
+## Завершение тестовой приёмки 2026-09-07
+
+Пользователь подтвердил оформление завершения test-only приёмки №3484/№3520
+ответом «Да, оформляй». Разрешение относится к фиксации уже проверенных результатов
+на dev.master-mobile.ru и Ekama_Test_Integration; не разрешает production,
+коммиты, публикации, новые заказы или реальные списания. Одобрение оформления
+зарегистрировано 2026-09-07T16:54:29Z, после получения технических результатов.
+Фаза и evidence связаны через delivery_control. Независимая production-приёмка
+этим документом не заявляется; production-пилот и credential rotation остаются
+отдельными последующими действиями с отдельным разрешением.
+
 # Changelog
 
+- 2026-09-07 — пользователь ответом «Да, оформляй» подтвердил оформление
+  завершения test-only приёмки №3484/№3520. Согласование зарегистрировано
+  в16:54:29UTC; ранее наблюдённые результаты не переименованы в новые тесты.
+  Финальная фаза completed, evidence passed; production, коммиты и публикации
+  не разрешены. Прежний pending этой фазы снят новым явным решением.
+- 2026-09-07 — полный тестовый runtime suite завершён exit0:3709PASS/37skip,
+  466.29сек; пропуски относятся к другим подсистемам и разобраны отдельно.
+  Ранее упавший release-builder test прошёл на коротком basetemp без правок
+  исходников. Проверки корректности guard/CRM и runtime source завершены;
+  формальный delivery_control всё ещё не закрыт, approval финальной фазы pending.
+  Наблюдаемые результаты сохранены в
+  docs/evidence/order-payment-control-test-only-final-audit.yml и соседнем
+  summary.json; result partial отражает незакрытый formal gate, а не падение тестов.
 - 2026-09-07 — исправление CRM-уникальности перенесено только шестистрочной
   правкой в тестовый worktree, без перезаписи ранее исправленного SQL Server
   SERIALIZABLE пути. Тестовая служба перезапущена; Integration и отдельная SQLite

@@ -1,0 +1,38 @@
+{
+  "observed_at": "2026-09-07T16:45:54Z",
+  "scope": "test-only; no production, real charges, commits or Bitrix publications",
+  "runtime_source": "/opt/MM/.worktrees/task-3520-pricing-review",
+  "runtime_service": "pricing-service-task-3520-test.service",
+  "onec_database": "Ekama_Test_Integration",
+  "guard_source_sha256": "aab02a4ecc0281256fb26a29c5917c709842221236178bad7bb521fdf71cb81b",
+  "availability_source_sha256": "377cf2523c239fb8e7df5f4f6e3b6d8f7379308978a12c78244f7509d7727fdf",
+  "full_pytest": {
+    "exit_code": 0,
+    "passed": 3709,
+    "skipped": 37,
+    "warnings": 5804,
+    "duration_seconds": 466.29,
+    "skip_reasons": {
+      "separate_customer_settlements_postgresql_not_configured": 11,
+      "php_not_installed_for_other_subsystems": 24,
+      "production_bitrix_mapping_overlay_absent": 1,
+      "ignored_xls_fixture_absent": 1
+    }
+  },
+  "focused_runtime_tests": {"exit_code": 0, "passed": 77},
+  "full_runtime_ruff": {"exit_code": 0},
+  "full_runtime_black": {"exit_code": 0, "files_unchanged": 1076},
+  "runtime_openapi": {"exit_code": 0},
+  "dev_guard_readback": {
+    "order_id": 239891,
+    "payment_id": 215226,
+    "check_id": "e9ea44cccf5648dcb38f7050bed7ab17",
+    "paid": "N",
+    "allowed": false,
+    "reason": "onec_order_unposted",
+    "confirmed_ready_at": null
+  },
+  "formal_phase_approval": "approved",
+  "approval_recorded_at": "2026-09-07T16:54:29Z",
+  "delivery_control_complete": true
+}
