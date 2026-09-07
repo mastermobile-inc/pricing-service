@@ -74,7 +74,7 @@ class _Connection:
             assert params is None
             assert f"0x{ORDER_REF.hex()}" in sql
             return _Mappings(self.engine.line_rows)
-        if "_AccumRgT7662" in sql:
+        if "_AccumRg7653" in sql:
             assert params is None
             assert "_Fld7657_RTRef = 0x00000084" in sql
             assert f"0x{ORDER_REF.hex()}" in sql
@@ -499,6 +499,50 @@ def test_payment_control_endpoint_fails_closed_on_malformed_onec_reference(monke
     assert exc_info.value.detail["code"] == "onec_invalid_data"
 
 
+@pytest.mark.parametrize("error_type", [ConnectionResetError, BrokenPipeError, TimeoutError])
+@pytest.mark.parametrize("failure_stage", ["connect", "query"])
+def test_payment_control_transport_failure_denies_then_checks_fresh(
+    monkeypatch, caplog, error_type, failure_stage
+) -> None:
+    _configure(monkeypatch)
+    engine = _Engine([_row()])
+    monkeypatch.setattr(api, "get_onec_engine", lambda: engine)
+    monkeypatch.setattr(api, "_confirmed_ready_at", lambda *_args: None)
+    target = engine if failure_stage == "connect" else _Connection
+    method = "connect" if failure_stage == "connect" else "execute"
+    original = getattr(target, method)
+    failed = False
+
+    def fail_once(*args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise error_type("private-driver-details-must-not-leak")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, method, fail_once)
+    with pytest.raises(HTTPException) as exc_info:
+        api.check_order_payment(_payload())
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == {
+        "code": "onec_unavailable",
+        "message": "1C source is unavailable",
+    }
+    assert "private-driver-details-must-not-leak" not in caplog.text
+    assert engine.active_transactions == engine.active_connections == 0
+
+    # A later request must re-read the source; no retry or cached permission.
+    engine.reserve_rows = []
+    response = api.check_order_payment(_payload())
+    assert response.allowed is False
+    assert response.reason == "onec_reservation_none"
+    engine.reserve_rows = [_reserve_row()]
+    response = api.check_order_payment(_payload())
+    assert response.allowed is True
+    assert response.reservation_state == "FULL"
+    assert engine.active_transactions == engine.active_connections == 0
+
+
 def test_confirmed_ready_at_unconfigured_source_stays_nullable(monkeypatch) -> None:
     def fail():
         raise DatabaseNotConfiguredError("application database is unavailable")
@@ -506,3 +550,59 @@ def test_confirmed_ready_at_unconfigured_source_stays_nullable(monkeypatch) -> N
     monkeypatch.setattr(api, "get_application_engine", fail)
 
     assert api._confirmed_ready_at("225550", datetime.now(timezone.utc)) is None
+
+
+def test_document_coverage_opt_in_preserves_actual_reservation_state(monkeypatch):
+    from app.services import order_document_evidence
+    from app.services.order_document_coverage import CoverageResult
+
+    monkeypatch.setattr(
+        order_document_evidence,
+        "fetch_document_coverage",
+        lambda *a, **kw: CoverageResult(True, "amount_and_full_document_coverage_match"),
+    )
+    decision = _check([_row()], reserves=[], allow_document_coverage=True)
+    assert decision.allowed
+    assert decision.reason == "amount_and_full_document_coverage_match"
+    assert decision.fulfillment_state == "DOCUMENTED"
+    assert decision.reservation_state == "NONE"
+    assert not decision.reservation_quantity_match
+    assert decision.reservation_confirmed_at is None
+
+
+def test_document_coverage_default_off_never_reads_sales(monkeypatch):
+    from app.services import order_document_evidence
+
+    def forbidden(*a, **kw):
+        raise AssertionError("Default reserve-only mode must not read sales")
+
+    monkeypatch.setattr(order_document_evidence, "fetch_document_coverage", forbidden)
+    decision = _check([_row()], reserves=[])
+    assert not decision.allowed
+    assert decision.reason == "onec_reservation_none"
+
+
+def test_stale_reserve_does_not_bypass_failed_document_proof(monkeypatch):
+    from app.services import order_document_evidence
+    from app.services.order_document_coverage import CoverageResult
+
+    monkeypatch.setattr(
+        order_document_evidence,
+        "fetch_document_coverage",
+        lambda *a, **kw: CoverageResult(False, "document_reserve_overlap"),
+    )
+    decision = _check([_row()], allow_document_coverage=True)
+    assert decision.reservation_state == "FULL"
+    assert not decision.allowed
+    assert decision.reason == "onec_document_coverage_unconfirmed"
+
+
+def test_document_profile_does_not_bypass_money_or_closure(monkeypatch):
+    from app.services import order_document_evidence
+
+    def forbidden(*a, **kw):
+        raise AssertionError("Money/cancellation refusal must precede documentary permission")
+
+    monkeypatch.setattr(order_document_evidence, "fetch_document_coverage", forbidden)
+    assert not _check([_row()], site="1", payment="1", allow_document_coverage=True).allowed
+    assert not _check([_row()], closures=[_closure_row()], allow_document_coverage=True).allowed

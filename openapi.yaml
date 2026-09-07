@@ -27368,6 +27368,13 @@ components:
           - type: string
             pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
           title: Payment Amount
+        protection_profile:
+          type: string
+          enum:
+          - reserve
+          - minimal_v1
+          title: Protection Profile
+          default: reserve
         stage:
           type: string
           enum:
@@ -27418,6 +27425,8 @@ components:
           type: string
           enum:
           - amount_and_full_reservation_match
+          - amount_and_full_document_coverage_match
+          - onec_document_coverage_unconfirmed
           - site_payment_mismatch
           - onec_order_not_found
           - onec_order_deleted
@@ -27476,6 +27485,13 @@ components:
           - type: string
           - type: 'null'
           title: Onec Closure Reason
+        fulfillment_state:
+          type: string
+          enum:
+          - UNCONFIRMED
+          - DOCUMENTED
+          title: Fulfillment State
+          default: UNCONFIRMED
         reservation_state:
           type: string
           enum:

@@ -279,6 +279,7 @@ class Settings(BaseSettings):
     order_fulfillment_internal_api_token: str | None = None
     order_payment_control_internal_api_token: str | None = None
     order_payment_control_require_posted: bool = False
+    order_payment_control_document_coverage_enabled: bool = False
     order_payment_control_closure_blocks_payment: bool = True
     order_payment_control_closure_allowed_reasons: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["Исполнение заказа", "Частичное исполнение заказа"]

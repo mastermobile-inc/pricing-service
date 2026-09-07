@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 PaymentCheckStage = Literal["checkout", "cloudpayments_check", "cloudpayments_pay"]
 PaymentDecisionReason = Literal[
     "amount_and_full_reservation_match",
+    "amount_and_full_document_coverage_match",
+    "onec_document_coverage_unconfirmed",
     "site_payment_mismatch",
     "onec_order_not_found",
     "onec_order_deleted",
@@ -33,6 +35,7 @@ class OrderPaymentCheckRequest(BaseModel):
     site_order_number: str = Field(min_length=1, max_length=40)
     site_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
     payment_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
+    protection_profile: Literal["reserve", "minimal_v1"] = "reserve"
     stage: PaymentCheckStage
     payment_id: str | None = Field(default=None, max_length=128)
     region_xml_id: str = Field(
@@ -72,6 +75,7 @@ class OrderPaymentCheckResponse(BaseModel):
     onec_posted: bool | None = None
     onec_closure_document: str | None = None
     onec_closure_reason: str | None = None
+    fulfillment_state: Literal["UNCONFIRMED", "DOCUMENTED"] = "UNCONFIRMED"
     reservation_state: ReservationState
     reservation_quantity_match: bool
     source_warehouse_xml_id: UUID | None = None
