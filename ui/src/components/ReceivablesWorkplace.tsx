@@ -553,7 +553,9 @@ function ReceivableRow({
               </a>
             ) : (
               <span className="receivables__card-link receivables__card-link--disabled">
-                Карточка Bitrix не создана
+                {item.bitrix_item_id != null || item.bitrix_detail_url
+                  ? "Ссылка на карточку недоступна"
+                  : "Карточка Bitrix не создана"}
               </span>
             )}
           </div>

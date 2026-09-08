@@ -61,6 +61,7 @@ export interface ReceivableWorkplaceItem {
   counterparty_ref: string;
   counterparty_code?: string | null;
   counterparty_name?: string | null;
+  bitrix_item_id?: number | null;
   bitrix_detail_url?: string | null;
   department_ref?: string | null;
   department_name?: string | null;
