@@ -5,6 +5,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -180,14 +181,42 @@ def _payload_dict(item: ReceivableWorkItem | None) -> dict[str, Any]:
 def _bitrix_detail_url(item: ReceivableWorkItem | None) -> str | None:
     if item is None:
         return None
-    if item.bitrix_detail_url:
-        return item.bitrix_detail_url
-    if item.bitrix_item_id is None:
+    settings = get_settings()
+    detail_url = (item.bitrix_detail_url or "").strip()
+    if not detail_url:
+        entity_type_id = settings.receivable_bitrix_entity_type_id
+        if item.bitrix_item_id is None or entity_type_id is None:
+            return None
+        detail_url = f"/crm/type/{entity_type_id}/details/{item.bitrix_item_id}/"
+    if "\\" in detail_url or any(ord(character) < 32 for character in detail_url):
         return None
-    entity_type_id = get_settings().receivable_bitrix_entity_type_id
-    if entity_type_id is None:
+    try:
+        parsed = urlsplit(detail_url)
+    except ValueError:
         return None
-    return f"/crm/type/{entity_type_id}/details/{item.bitrix_item_id}/"
+    if parsed.scheme or parsed.netloc:
+        if (
+            parsed.scheme in {"https", "http"}
+            and parsed.hostname
+            and not parsed.username
+            and not parsed.password
+        ):
+            return detail_url
+        return None
+    if not detail_url.startswith("/") or detail_url.startswith("//"):
+        return None
+    try:
+        portal = urlsplit(settings.receivable_bitrix_webhook_url or "")
+    except ValueError:
+        return detail_url
+    if (
+        portal.scheme not in {"https", "http"}
+        or not portal.hostname
+        or portal.username
+        or portal.password
+    ):
+        return detail_url
+    return urlunsplit((portal.scheme, portal.netloc, "", "", "")) + detail_url
 
 
 def _action_idempotency_key(counterparty_ref: str, action_id: str | None) -> str | None:
@@ -750,6 +779,7 @@ def _build_item(
         or counterparty_code
         or item_payload.get("counterparty_code"),
         counterparty_name=case.counterparty_name,
+        bitrix_item_id=item.bitrix_item_id if item else None,
         bitrix_detail_url=_bitrix_detail_url(item),
         department_ref=case.department_ref,
         department_name=case.department_name,

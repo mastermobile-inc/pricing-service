@@ -78,7 +78,15 @@ class ReceivableWorkplaceItem(BaseModel):
     counterparty_ref: str
     counterparty_code: str | None = None
     counterparty_name: str | None = None
-    bitrix_detail_url: str | None = None
+    bitrix_item_id: int | None = Field(default=None, description="ID связанной карточки Bitrix.")
+    bitrix_detail_url: str | None = Field(
+        default=None,
+        description=(
+            "HTTP(S)-ссылка на карточку Bitrix. Относительный путь дополняется адресом портала "
+            "из RECEIVABLE_BITRIX_WEBHOOK_URL без секретного пути и параметров; "
+            "если портал не настроен, сохраняется относительный путь для совместимости."
+        ),
+    )
     department_ref: str | None = None
     department_name: str | None = None
     responsible_ref: str | None = None

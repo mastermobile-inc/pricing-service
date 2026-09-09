@@ -56,6 +56,92 @@ from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 from tests.test_receivable_workflow import _settings
 
 
+@pytest.mark.parametrize(
+    ("stored_url", "expected_url"),
+    [
+        (
+            "/page/sales/debtors/type/187/details/555/?categoryId=50",
+            "https://crm.example.test/page/sales/debtors/type/187/details/555/?categoryId=50",
+        ),
+        (None, "https://crm.example.test/crm/type/187/details/555/"),
+        (
+            "https://crm.example.test/crm/type/187/details/555/",
+            "https://crm.example.test/crm/type/187/details/555/",
+        ),
+    ],
+)
+def test_bitrix_detail_url_does_not_require_iframe_launch_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    stored_url: str | None,
+    expected_url: str,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        receivable_bitrix_entity_type_id=187,
+        receivable_bitrix_webhook_url="https://crm.example.test/rest/1/test-secret/?token=private",
+    )
+    monkeypatch.setattr(receivable_workplace_service, "get_settings", lambda: settings)
+    work_item = ReceivableWorkItem(bitrix_item_id=555, bitrix_detail_url=stored_url)
+
+    assert receivable_workplace_service._bitrix_detail_url(work_item) == expected_url
+
+
+@pytest.mark.parametrize(
+    "stored_url",
+    [
+        "javascript:alert(1)",
+        "//other.example.test/crm/type/187/details/555/",
+        "/\\other.example.test/crm/type/187/details/555/",
+        "https://user:password@crm.example.test/crm/type/187/details/555/",
+        "https://[invalid/",
+    ],
+)
+def test_bitrix_detail_url_rejects_unsafe_stored_links(
+    monkeypatch: pytest.MonkeyPatch, stored_url: str
+) -> None:
+    monkeypatch.setattr(
+        receivable_workplace_service, "get_settings", lambda: Settings(_env_file=None)
+    )
+    work_item = ReceivableWorkItem(bitrix_item_id=555, bitrix_detail_url=stored_url)
+
+    assert receivable_workplace_service._bitrix_detail_url(work_item) is None
+
+
+@pytest.mark.parametrize(
+    "webhook_url",
+    [
+        None,
+        "invalid",
+        "https://[invalid/",
+        "javascript:alert(1)",
+        "https://user:pass@crm.test/rest/",
+    ],
+)
+def test_bitrix_detail_url_keeps_relative_link_when_portal_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, webhook_url: str | None
+) -> None:
+    settings = Settings(_env_file=None, receivable_bitrix_webhook_url=webhook_url)
+    monkeypatch.setattr(receivable_workplace_service, "get_settings", lambda: settings)
+    work_item = ReceivableWorkItem(bitrix_detail_url="/crm/type/187/details/555/")
+
+    assert (
+        receivable_workplace_service._bitrix_detail_url(work_item) == "/crm/type/187/details/555/"
+    )
+
+
+def test_bitrix_detail_url_does_not_invent_missing_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(_env_file=None, receivable_bitrix_entity_type_id=187)
+    monkeypatch.setattr(receivable_workplace_service, "get_settings", lambda: settings)
+
+    assert receivable_workplace_service._bitrix_detail_url(None) is None
+    assert receivable_workplace_service._bitrix_detail_url(ReceivableWorkItem()) is None
+    settings.receivable_bitrix_entity_type_id = None
+    work_item = ReceivableWorkItem(bitrix_item_id=555)
+    assert receivable_workplace_service._bitrix_detail_url(work_item) is None
+
+
 def test_receivable_workplace_build_slot_rejects_when_busy(monkeypatch) -> None:
     class BusySemaphore:
         def acquire(self, *, timeout: float) -> bool:
@@ -1901,6 +1987,7 @@ def test_receivable_workplace_api_requires_token_and_returns_payload(
                 counterparty_name="Клиент 1",
                 status="new_debt",
                 current_balance=Decimal("12500"),
+                bitrix_item_id=555,
                 bitrix_detail_url="/crm/type/187/details/555/",
             ),
         ]
@@ -1911,6 +1998,9 @@ def test_receivable_workplace_api_requires_token_and_returns_payload(
         yield db_session
 
     monkeypatch.setenv("MANAGEMENT_INTERNAL_API_TOKEN", "secret-token")
+    monkeypatch.setenv(
+        "RECEIVABLE_BITRIX_WEBHOOK_URL", "https://crm.example.test/rest/1/test-secret/"
+    )
     get_settings.cache_clear()
     app.dependency_overrides = {get_db: override_db}
     client = TestClient(app)
@@ -1927,7 +2017,11 @@ def test_receivable_workplace_api_requires_token_and_returns_payload(
         payload = response.json()
         assert payload["summary"]["row_count"] == 1
         assert payload["payload"][0]["counterparty_ref"] == "cp-1"
-        assert payload["payload"][0]["bitrix_detail_url"] == "/crm/type/187/details/555/"
+        assert payload["payload"][0]["bitrix_item_id"] == 555
+        assert (
+            payload["payload"][0]["bitrix_detail_url"]
+            == "https://crm.example.test/crm/type/187/details/555/"
+        )
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()
