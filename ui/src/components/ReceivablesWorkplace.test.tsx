@@ -79,6 +79,8 @@ const response: ReceivableWorkplaceResponse = {
   payload: [item],
 };
 
+const originalLaunch = window.__MM_BITRIX_LAUNCH__;
+
 describe("ReceivablesWorkplace", () => {
   beforeEach(() => {
     vi.mocked(fetchReceivableWorkplaceMeta).mockResolvedValue({
@@ -100,6 +102,50 @@ describe("ReceivablesWorkplace", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    window.__MM_BITRIX_LAUNCH__ = originalLaunch;
+  });
+
+  it.each(["direct", "dashboard", "reload"])(
+    "opens the same card after %s entry",
+    async (entry) => {
+      window.__MM_BITRIX_LAUNCH__ = entry === "direct" ? { domain: "crm.example.test" } : undefined;
+      const cardUrl = "https://crm.example.test/crm/type/187/details/555/";
+      vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+        ...response,
+        payload: [{ ...item, bitrix_item_id: 555, bitrix_detail_url: cardUrl }],
+      });
+
+      render(<ReceivablesWorkplace bitrixMode />);
+
+      const link = await screen.findByRole("link", { name: "Открыть карточку" });
+      expect(link).toHaveAttribute("href", cardUrl);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(screen.queryByText("Карточка Bitrix не создана")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { bitrix_item_id: 555, bitrix_detail_url: null },
+    { bitrix_item_id: null, bitrix_detail_url: "/crm/type/187/details/555/" },
+  ])("does not call an existing card missing when its link is unavailable: %o", async (card) => {
+    window.__MM_BITRIX_LAUNCH__ = undefined;
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      payload: [{ ...item, ...card }],
+    });
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Ссылка на карточку недоступна")).toBeVisible();
+    expect(screen.queryByText("Карточка Bitrix не создана")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть карточку" })).not.toBeInTheDocument();
+  });
+
+  it("shows a missing card only when there is no ID or link", async () => {
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Карточка Bitrix не создана")).toBeVisible();
+    expect(screen.queryByText("Ссылка на карточку недоступна")).not.toBeInTheDocument();
   });
 
   it("keeps one save action inside the expanded comment editor", async () => {

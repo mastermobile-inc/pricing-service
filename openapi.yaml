@@ -33221,11 +33221,19 @@ components:
           - type: string
           - type: 'null'
           title: Counterparty Name
+        bitrix_item_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Item Id
+          description: ID связанной карточки Bitrix.
         bitrix_detail_url:
           anyOf:
           - type: string
           - type: 'null'
           title: Bitrix Detail Url
+          description: HTTP(S)-ссылка на карточку Bitrix. Относительный путь дополняется адресом портала из RECEIVABLE_BITRIX_WEBHOOK_URL
+            без секретного пути и параметров; если портал не настроен, сохраняется относительный путь для совместимости.
         department_ref:
           anyOf:
           - type: string
