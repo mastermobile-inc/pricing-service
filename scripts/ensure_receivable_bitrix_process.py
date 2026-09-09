@@ -146,7 +146,7 @@ CUSTOM_FIELD_SPECS = [
     },
     {
         "logical_key": "age_days",
-        "title": "Дней от реализации",
+        "title": "Дней с документа-основания",
         "type": "integer",
         "searchable": False,
         "edit_in_list": True,

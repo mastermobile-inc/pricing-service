@@ -28,6 +28,7 @@ from app.services.receivable_workflow import (
     STATUS_NEW_DEBT,
     STATUS_NO_PHONE,
     STATUS_PAID,
+    debt_age_days,
     debt_key_for_case,
     format_chain_documents_for_bitrix,
     stable_key_for_counterparty,
@@ -158,6 +159,39 @@ def _case(
             },
         ],
     )
+
+
+def test_age_days_uses_origin_document_not_latest_chain_document() -> None:
+    case = _case(
+        snapshot_date=date(2026, 9, 9),
+        segment=CASE_BUYERS,
+        origin_date=datetime(2026, 8, 17, 11, 6, 32),
+    )
+    case.chain_documents = [
+        {"document_number": "OLDER", "document_date": "2026-08-17T11:06:32"},
+        {"document_number": "NEWER", "document_date": "2026-09-01T12:00:00"},
+    ]
+
+    assert debt_age_days(case, as_of=date(2026, 9, 9)) == 23
+    assert debt_age_days(case, as_of=date(2026, 9, 10)) == 24
+
+
+def test_age_days_without_origin_date_is_unknown() -> None:
+    case = _case(snapshot_date=date(2026, 9, 9), segment=CASE_BUYERS)
+    case.origin_document_date = None
+
+    assert debt_age_days(case, as_of=date(2026, 9, 9)) is None
+
+
+def test_age_days_never_reports_negative_age() -> None:
+    case = _case(
+        snapshot_date=date(2026, 9, 9),
+        segment=CASE_BUYERS,
+        origin_date=datetime(2026, 9, 10, 12),
+    )
+
+    assert debt_age_days(case, as_of=date(2026, 9, 9)) == 0
+    assert debt_age_days(case, as_of=date(2026, 9, 10)) == 0
 
 
 def test_chain_documents_are_formatted_for_bitrix_without_technical_values() -> None:
