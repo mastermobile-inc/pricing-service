@@ -308,8 +308,12 @@ def test_product_card_review_uses_180_day_fallback(db_session, monkeypatch) -> N
     assert snapshot["family"]["ranking_source"] == "completed_sales_rate_180_fallback"
 
 
+@pytest.mark.parametrize(
+    "folder_path", [None, "Дисплеи для Acer", "ОБЩИЙ КАТАЛОГ / Запчасти / Дисплеи для Acer"]
+)
 def test_product_card_snapshot_uses_persisted_product_binding_without_order_line(
     product_card_classification_db,
+    folder_path,
 ) -> None:
     db_session = product_card_classification_db
     db_session.execute(
@@ -320,7 +324,7 @@ def test_product_card_snapshot_uses_persisted_product_binding_without_order_line
             status="working",
             status_label="Рабочий",
             product_ref=CLASSIFICATION_ONLY_GUID,
-            source_record={"sales_qty_window_short": "12"},
+            source_record={"sales_qty_window_short": "12", "folder_path": folder_path},
             source_hash="b" * 64,
             source="test",
             classified_at=datetime(2026, 9, 2, 9, 0, 0),
@@ -353,6 +357,7 @@ def test_product_card_snapshot_uses_persisted_product_binding_without_order_line
         "nomenclature_code": "РБ000006739",
         "name": "Дисплей из классификации",
         "article": "",
+        "onec_folder": folder_path,
         "photo_url": None,
         "website_url": None,
         "bitrix_url": "/crm/catalog/17/product/1648/",

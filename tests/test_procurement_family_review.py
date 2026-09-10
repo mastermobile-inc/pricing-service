@@ -12,6 +12,7 @@ from app.models.display_family_registry import (
     DisplayFamilyDecisionEvent,
     DisplayFamilyRegistryVersion,
 )
+from app.models.product import Product
 from app.services import procurement_family_review as review_service
 from app.services.procurement_family_review import (
     build_family_review_card,
@@ -21,6 +22,7 @@ from app.services.procurement_order_formation import VersionConflictError
 
 
 def _seed_registry(db_session):
+    db_session.add_all([Product(code_1c=code, article=code, name=code) for code in ("A", "B")])
     version = DisplayFamilyRegistryVersion(
         version_number=7,
         status="active",
@@ -108,6 +110,16 @@ def _snapshot(version, family, *, sales="10"):
             ],
         },
     }
+
+
+def test_folder_display_does_not_invalidate_review_facts(db_session):
+    version, family = _seed_registry(db_session)
+    snapshot = _snapshot(version, family)
+    before = review_service._hash(review_service._facts_snapshot(snapshot))
+    member = snapshot["family"]["comparison_members"][0]["card"]
+    member["identity"]["onec_folder"] = "Дисплеи для Acer"
+    assert review_service._hash(review_service._facts_snapshot(snapshot)) == before
+    assert member["identity"]["onec_folder"] == "Дисплеи для Acer"
 
 
 def test_quality_and_distribution_are_independent_idempotent_and_close_blocker(

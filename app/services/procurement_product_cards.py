@@ -688,6 +688,7 @@ def _snapshot_from_sources(
             "nomenclature_code": code,
             "name": name,
             "article": str(classification.get("article") or source_record.get("article") or ""),
+            "onec_folder": str(source_record.get("folder_path") or "").strip() or None,
             "photo_url": _first_photo(line, product),
             "website_url": payload.get("product_card_url"),
             "bitrix_url": bitrix_product_path(

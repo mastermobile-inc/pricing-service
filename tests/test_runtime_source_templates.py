@@ -73,11 +73,13 @@ def test_bronze_inventory_schedule_sets_import_path() -> None:
     assert f"PYTHONPATH={IMMUTABLE_RUNTIME_ROOT}" in text
 
 
-def test_assortment_lifecycle_classification_runs_once_in_nightly_window() -> None:
+def test_assortment_lifecycle_classification_checks_dependencies_in_nightly_window() -> None:
     text = (REPO_ROOT / "infra/cron/assortment_lifecycle_classification.cron").read_text(
         encoding="utf-8"
     )
     schedule_lines = [line for line in text.splitlines() if line and not line.startswith("CRON_TZ")]
 
     assert len(schedule_lines) == 1
-    assert schedule_lines[0].startswith("12 0 * * * root ")
+    assert schedule_lines[0].startswith("*/5 4-5 * * * root ")
+    assert f"{IMMUTABLE_RUNTIME_ROOT}/.venv/bin/python" in schedule_lines[0]
+    assert f"{IMMUTABLE_RUNTIME_ROOT}/scripts/run_assortment_after_sources.py" in schedule_lines[0]

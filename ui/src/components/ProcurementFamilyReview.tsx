@@ -50,6 +50,7 @@ const ROWS: Array<{
   value: (card: ProcurementProductCard) => string;
 }> = [
   { group: "Карточка", label: "Код 1С", value: (card) => display(card.identity.nomenclature_code) },
+  { group: "Карточка", label: "Папка в 1С", value: (card) => card.identity.onec_folder || "нет данных" },
   { group: "Карточка", label: "Жизненный статус", value: (card) => display(card.lifecycle.label || card.lifecycle.status) },
   { group: "Карточка", label: "День рождения", value: (card) => display(card.lifecycle.birthday) },
   { group: "Состояние строки", label: "Блокеры", value: (card) => card.blockers.length ? `${card.blockers.length} шт.` : "нет" },

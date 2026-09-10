@@ -43,6 +43,7 @@ from app.services.exporters.ut103_procurement_orders import (
     build_procurement_supplier_orders_xml,
     write_procurement_supplier_orders_message,
 )
+from app.services.general_catalog_scope import require_general_catalog_codes
 from app.services.onec_nomenclature_snapshot import (
     fetch_onec_nomenclature_by_codes,
     fetch_onec_supplier_by_ref,
@@ -1214,6 +1215,9 @@ def approve_order(
     session: ProcurementOrderFormationSession,
 ) -> ProcurementOrderFormation:
     order = get_order(db, order_id)
+    require_general_catalog_codes(
+        db, [line.nomenclature_code for line in order.lines if not line.removed]
+    )
     blockers = order_blockers(order)
     if blockers:
         raise ValueError("order has blockers: " + "; ".join(blockers))
@@ -1237,6 +1241,9 @@ def transmit_order(
 ) -> tuple[ProcurementOrderFormation, str, str, str, Path | None]:
     settings = settings or get_settings()
     order = get_order(db, order_id)
+    require_general_catalog_codes(
+        db, [line.nomenclature_code for line in order.lines if not line.removed]
+    )
     blockers = order_blockers(order)
     if blockers:
         raise ValueError("order has blockers: " + "; ".join(blockers))

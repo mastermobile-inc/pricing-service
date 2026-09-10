@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models.display_family_registry import DisplayFamilyDecisionEvent
 from app.models.product import Product
+from app.services.general_catalog_scope import require_general_catalog_codes
 from app.services.procurement_order_formation import VersionConflictError
 from app.services.procurement_product_cards import build_product_card_review_snapshot
 
@@ -38,6 +39,16 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _decision_card_facts(card: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if card is None:
+        return None
+    result = dict(card)
+    identity = dict(result.get("identity") or {})
+    identity.pop("onec_folder", None)
+    result["identity"] = identity
+    return result
+
+
 def _facts_snapshot(card: Mapping[str, Any]) -> dict[str, Any]:
     family = dict(card.get("family") or {})
     comparison = list(family.get("comparison_members") or [])
@@ -54,7 +65,7 @@ def _facts_snapshot(card: Mapping[str, Any]) -> dict[str, Any]:
                 "role": item.get("role"),
                 "rank": item.get("rank"),
                 "speed_score": item.get("speed_score"),
-                "card": item.get("card"),
+                "card": _decision_card_facts(item.get("card")),
             }
             for item in comparison
             if isinstance(item, Mapping)
@@ -162,6 +173,7 @@ def save_family_review_decision(
         raise PermissionError("сохранение решений временно выключено")
     if kind not in {"quality", "distribution"}:
         raise ValueError("unknown family review decision kind")
+    require_general_catalog_codes(db, [nomenclature_code])
     card = build_family_review_card(
         db,
         nomenclature_code=nomenclature_code,
@@ -182,6 +194,7 @@ def save_family_review_decision(
 
     if kind == "distribution":
         expected_codes = set(family.get("member_codes") or [])
+        require_general_catalog_codes(db, sorted(expected_codes))
         actual_codes = set(dict(decision.get("quantities") or {}))
         if actual_codes != expected_codes:
             missing = sorted(expected_codes - actual_codes)

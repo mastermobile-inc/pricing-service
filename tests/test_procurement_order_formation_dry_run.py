@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.models.procurement_order_formation import ProcurementOrderFormation
+from app.models.product import Product
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.master_mobile_catalog import ProductMediaResolution
 from app.services.procurement_order_formation import serialize_line, update_order_line
@@ -19,6 +20,15 @@ from tasks.build_procurement_order_formation_dry_run import (
     persist_grouped_orders,
     select_order_rows,
 )
+
+
+@pytest.fixture()
+def db_session(db_session):
+    db_session.add_all(
+        [Product(code_1c=code, article=code, name=code) for code in ("A", "B", "C", "D", "E")]
+    )
+    db_session.commit()
+    return db_session
 
 
 def test_receiving_warehouse_is_loaded_from_policy(tmp_path: Path) -> None:
@@ -598,6 +608,15 @@ def _grouped_orders_with_codes(
         source_run_id=calculation_id,
         responsible_bitrix_user_id="130757",
     )
+
+
+def test_order_persistence_rechecks_catalog_before_creating_documents(db_session):
+    orders = _grouped_orders_with_codes(
+        ["A", "OUTSIDE"], batch_id="scope-test", calculation_id="scope-test"
+    )
+    with pytest.raises(ValueError, match="gate_not_in_general_catalog"):
+        persist_grouped_orders(db_session, orders)
+    assert db_session.query(ProcurementOrderFormation).count() == 0
 
 
 def test_persist_renumbers_disappeared_line_when_batch_grows(db_session) -> None:

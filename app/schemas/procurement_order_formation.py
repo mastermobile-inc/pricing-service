@@ -179,6 +179,7 @@ class ProcurementProductCardIdentityRead(BaseModel):
     nomenclature_code: str
     name: str
     article: str = ""
+    onec_folder: str | None = None
     photo_url: str | None = None
     website_url: str | None = None
     bitrix_url: str | None = None

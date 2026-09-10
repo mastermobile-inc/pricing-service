@@ -31658,6 +31658,11 @@ components:
           type: string
           title: Article
           default: ''
+        onec_folder:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Folder
         photo_url:
           anyOf:
           - type: string

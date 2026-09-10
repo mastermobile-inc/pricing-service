@@ -42,6 +42,7 @@ from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
 )
+from app.services.general_catalog_scope import general_catalog_product_condition
 from app.services.procurement_order_formation import (
     PROPERTY_UPDATE_SOURCE,
     STATUS_APPROVED_BY_PROPERTY_NAME,
@@ -341,6 +342,7 @@ def build_dashboard(
     latest_run_id = int(run["id"]) if run else 0
     rows = _snapshot_rows(db, folder=folder, run_id=latest_run_id or None)
     transition_query = select(ProcurementLifecycleTransitionProposal).where(
+        general_catalog_product_condition(ProcurementLifecycleTransitionProposal.nomenclature_code),
         ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
         ProcurementLifecycleTransitionProposal.status == "pending",
     )
@@ -505,6 +507,12 @@ def list_lifecycle_transitions(
             ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
             ProcurementLifecycleTransitionProposal.status == proposal_status,
         ]
+        if proposal_status == "pending":
+            proposal_filters.append(
+                general_catalog_product_condition(
+                    ProcurementLifecycleTransitionProposal.nomenclature_code
+                )
+            )
         if normalized_status != "all":
             proposal_filters.append(
                 ProcurementLifecycleTransitionProposal.current_status.in_(
@@ -578,6 +586,9 @@ def approve_lifecycle_transitions(
         proposal = db.get(ProcurementLifecycleTransitionProposal, proposal_id)
         if proposal is None:
             results.append(_approval_result(proposal_id, "failed", "Предложение не найдено"))
+            continue
+        if not db.scalar(select(general_catalog_product_condition(proposal.nomenclature_code))):
+            results.append(_approval_result(proposal_id, "blocked", "Карточка вне Общего каталога"))
             continue
         if proposal.status != "pending":
             results.append(_approval_result(proposal_id, "conflict", "Предложение уже обработано"))
@@ -681,6 +692,8 @@ def decide_lifecycle_transition(
     proposal = db.get(ProcurementLifecycleTransitionProposal, proposal_id)
     if proposal is None:
         raise LookupError("lifecycle proposal was not found")
+    if not db.scalar(select(general_catalog_product_condition(proposal.nomenclature_code))):
+        raise ValueError("Карточка вне Общего каталога")
 
     decision = normalize_status(values.get("decision"))
     if decision not in {"pension", "working"}:
@@ -1742,7 +1755,10 @@ def _snapshot_rows(
     run_id: int | None,
 ) -> list[Mapping[str, Any]]:
     statement = select(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE).where(
-        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.folder.ilike(f"%{folder}%")
+        general_catalog_product_condition(
+            ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code
+        ),
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.folder.ilike(f"%{folder}%"),
     )
     if run_id is not None:
         statement = statement.where(

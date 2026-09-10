@@ -16,6 +16,7 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
+from app.models.product import Product
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_METADATA,
     build_classification_rows,
@@ -153,6 +154,18 @@ def _seed_lifecycle(sqlite_engine) -> int:
         source="test",
         classified_at=now,
     )
+    with sqlite_engine.begin() as connection:
+        connection.execute(
+            Product.__table__.insert(),
+            [
+                {
+                    "code_1c": row["nomenclature_code"],
+                    "article": row["nomenclature_code"],
+                    "name": row["name"],
+                }
+                for row in summaries
+            ],
+        )
     result = persist_classification_rows(
         sqlite_engine,
         rows=rows,
@@ -173,6 +186,43 @@ def _approval_item(proposal: ProcurementLifecycleTransitionProposal) -> dict[str
         "expected_current_status": proposal.current_status,
         "facts_hash": proposal.facts_hash,
     }
+
+
+def test_catalog_gate_hides_old_snapshot_and_blocks_direct_decision(lifecycle_db, sqlite_engine):
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(
+        lifecycle_db, folder="дисплеи", run_id=run_id, settings=_settings()
+    )
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.nomenclature_code == "WORKING-1"
+        )
+    )
+    product = lifecycle_db.scalar(select(Product).where(Product.code_1c == "WORKING-1"))
+    product.is_active = False
+    lifecycle_db.commit()
+    dashboard = build_dashboard(lifecycle_db, settings=_settings())
+    assert dashboard["manual_status_counts"]["review"] == 0
+    for scope in ("all", "action"):
+        queue = list_lifecycle_transitions(lifecycle_db, status="all", scope=scope)
+        assert "WORKING-1" not in {row["nomenclature_code"] for row in queue["items"]}
+    with pytest.raises(ValueError, match="Общего каталога"):
+        decide_lifecycle_transition(
+            lifecycle_db,
+            proposal_id=proposal.id,
+            values={"decision": "pension", "reason": "Тест"},
+            session=_session("130757", "Омар"),
+            settings=_settings(),
+        )
+    result = approve_lifecycle_transitions(
+        lifecycle_db,
+        items=[_approval_item(proposal)],
+        idempotency_key="excluded-catalog",
+        session=_session("130757", "Омар"),
+        settings=_settings(),
+    )
+    assert result["summary"]["blocked"] == 1
+    assert proposal.status == "pending"
 
 
 def test_every_manual_status_has_a_recommendation() -> None:
@@ -780,6 +830,7 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
 
 def test_sale_to_working_is_omar_only(lifecycle_db, sqlite_engine) -> None:
     run_id = _seed_lifecycle(sqlite_engine)
+    lifecycle_db.add(Product(code_1c="SALE-1", article="SALE-1", name="Дисплей к рабочему"))
     proposal = ProcurementLifecycleTransitionProposal(
         nomenclature_code="SALE-1",
         nomenclature_ref=DISPLAY_GUID,

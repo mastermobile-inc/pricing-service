@@ -749,6 +749,7 @@ export interface ProcurementProductCard {
     nomenclature_code: string;
     name: string;
     article: string;
+    onec_folder?: string | null;
     photo_url?: string | null;
     website_url?: string | null;
     bitrix_url?: string | null;

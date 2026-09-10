@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -32,6 +32,7 @@ function member(code: string, name: string, recommended: string): ProcurementPro
 
 function card(): ProcurementFamilyReviewCard {
   const primary = member("A", "Основной дисплей", "2");
+  primary.identity.onec_folder = "Дисплеи для Acer";
   const candidate = member("B", "Дисплей-кандидат", "0");
   return {
     ...primary,
@@ -51,6 +52,13 @@ function card(): ProcurementFamilyReviewCard {
 }
 
 describe("ProcurementFamilyReview", () => {
+  it("показывает папку каждой карточки без выдуманного полного пути", async () => {
+    render(<ProcurementFamilyReview nomenclatureCode="A" onBack={vi.fn()} />);
+    const row = await screen.findByRole("row", { name: /Папка в 1С/ });
+    expect(within(row).getByText("Дисплеи для Acer")).toBeInTheDocument();
+    expect(within(row).getByText("нет данных")).toBeInTheDocument();
+    expect(row).not.toHaveTextContent("ОБЩИЙ КАТАЛОГ");
+  });
   beforeEach(() => {
     window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
     vi.mocked(fetchProcurementProductCardByCode).mockResolvedValue(card());

@@ -1,2 +1,2 @@
 CRON_TZ=Europe/Moscow
-12 0 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/assortment_lifecycle_classification.sh >> /var/log/pricing/assortment_lifecycle_classification.cron.log 2>&1
+*/5 4-5 * * * root /opt/MM/pricing-service-task43-current/.venv/bin/python /opt/MM/pricing-service-task43-current/scripts/run_assortment_after_sources.py >> /var/log/pricing/assortment_lifecycle_classification.cron.log 2>&1

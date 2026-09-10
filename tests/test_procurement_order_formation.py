@@ -17,6 +17,7 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
+from app.models.product import Product
 from app.schemas.procurement_order_formation import (
     ProcurementOrderAssistantResponse,
     ProcurementOrderLineUpdateRequest,
@@ -142,9 +143,36 @@ def _order(db_session) -> ProcurementOrderFormation:
             assortment_status="Рабочий",
         ),
     ]
+    existing_codes = set(db_session.scalars(select(Product.code_1c)))
+    db_session.add_all(
+        [
+            Product(
+                code_1c=line.nomenclature_code,
+                article=line.nomenclature_code,
+                name=line.nomenclature_name,
+            )
+            for line in order.lines
+            if line.nomenclature_code not in existing_codes
+        ]
+    )
     db_session.add(order)
     db_session.commit()
     return order
+
+
+def test_order_approval_and_transmission_recheck_catalog(db_session):
+    from sqlalchemy import update
+
+    order = _order(db_session)
+    db_session.execute(
+        update(Product).where(Product.code_1c == "РБ000006737").values(is_active=False)
+    )
+    db_session.commit()
+    for action in (approve_order, transmit_order):
+        with pytest.raises(ValueError, match="gate_not_in_general_catalog"):
+            action(db_session, order.id, _session())
+    assert order.status == "draft"
+    assert order.onec_message_id is None
 
 
 def test_onec_binary_reference_matches_commerceml_guid() -> None:

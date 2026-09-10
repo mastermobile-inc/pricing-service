@@ -29,6 +29,7 @@ from app.services.display_family_order_recommendation import (
     FAMILY_ORDER_RECOMMENDATION_MODE,
     FAMILY_ORDER_RECOMMENDATION_SCHEMA,
 )
+from app.services.general_catalog_scope import require_general_catalog_codes
 from app.services.master_mobile_catalog import (
     PHOTO_SOURCE,
     MasterMobileCatalogResolver,
@@ -838,6 +839,10 @@ def persist_grouped_orders(
 ) -> list[int]:
     from app.services.procurement_supply_scenarios import active_manual_removal
 
+    require_general_catalog_codes(
+        db,
+        [line.get("nomenclature_code") for payload in orders for line in payload.get("lines", [])],
+    )
     inherited_removals = {}
     candidates = db.scalars(
         select(ProcurementOrderFormation).where(
