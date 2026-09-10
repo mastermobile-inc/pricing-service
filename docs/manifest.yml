@@ -536,7 +536,7 @@ documents:
     title: Counterparty Folder Recommendations
     doc_type: spec
     domain: receivables
-    status: implemented
+    status: accepted
     owner: finance
     source_of_truth: true
     related_code: [app/api/management.py, app/services/counterparty_folder_recommendations.py, app/schemas/management.py, infra/cron/counterparty_folder_recommendations_from_a.py, infra/cron/counterparty_folder_recommendations_from_a.sh]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Sequence
 
@@ -45,6 +45,7 @@ class CachedOpenDebtDocuments:
     source_lag_days: int | None = None
     hidden_counterparty_refs: frozenset[str] = frozenset()
     document_mismatch_counterparty_refs: frozenset[str] = frozenset()
+    outdated_counterparty_refs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,32 @@ def _json_safe(value: Any) -> Any:
 
 def _money(value: Any) -> Decimal:
     return Decimal(str(value or "0")).quantize(Decimal("0.01"))
+
+
+def open_debt_document_date(document: dict[str, Any]) -> datetime | None:
+    value = document.get("document_date")
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip()).replace(tzinfo=None)
+        except ValueError:
+            return None
+    return None
+
+
+def ordered_open_debt_documents(
+    documents: Sequence[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    return sorted(
+        (dict(document) for document in documents or [] if _money(document.get("open_amount")) > 0),
+        key=lambda document: (
+            open_debt_document_date(document) or datetime.max,
+            str(document.get("document_ref") or document.get("document_number") or ""),
+        ),
+    )
 
 
 def latest_receivable_snapshot_date(
@@ -169,9 +196,20 @@ def load_cached_open_debt_documents(
         .scalars()
         .all()
     )
+    outdated_counterparty_refs = {
+        _ref_key(row.counterparty_ref)
+        for row in rows
+        if any(
+            document.get("statement_selection_rule") == "onec_canonical_continuous_balance_origin"
+            for document in row.documents or []
+        )
+    }
     documents_by_counterparty = {
         _ref_key(row.counterparty_ref): (
-            list(row.documents or []) if row.source_status == "ready" else []
+            ordered_open_debt_documents(row.documents)
+            if row.source_status == "ready"
+            and _ref_key(row.counterparty_ref) not in outdated_counterparty_refs
+            else []
         )
         for row in rows
     }
@@ -182,6 +220,7 @@ def load_cached_open_debt_documents(
         _ref_key(row.counterparty_ref)
         for row in rows
         if row.source_status in {"source_stale", "document_mismatch"}
+        or _ref_key(row.counterparty_ref) in outdated_counterparty_refs
     )
     document_mismatch_counterparty_refs = frozenset(
         _ref_key(row.counterparty_ref) for row in rows if row.source_status == "document_mismatch"
@@ -192,6 +231,8 @@ def load_cached_open_debt_documents(
     )
     if stale_rows:
         source_status = "source_stale"
+    elif outdated_counterparty_refs:
+        source_status = "cache_outdated"
     elif not rows:
         source_status = "cache_missing"
     elif missing_count:
@@ -208,6 +249,7 @@ def load_cached_open_debt_documents(
         source_lag_days=freshness.source_lag_days,
         hidden_counterparty_refs=hidden_counterparty_refs,
         document_mismatch_counterparty_refs=document_mismatch_counterparty_refs,
+        outdated_counterparty_refs=frozenset(outdated_counterparty_refs),
     )
 
 

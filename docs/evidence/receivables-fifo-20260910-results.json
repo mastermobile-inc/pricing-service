@@ -1,0 +1,108 @@
+{
+  "observed_at": "2026-09-10T09:33:24.862986+03:00",
+  "workspace": "/opt/MM/.worktrees/receivables-card-links-20260909",
+  "source_commit": "f27e338056ac42d451448542c07c215a018cbdfc",
+  "runtime_changed": false,
+  "verifications": [
+    {
+      "id": "focused-tests",
+      "command": "TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_receivable_fifo.py tests/test_receivable_workflow.py tests/test_receivable_bitrix_process.py tests/test_counterparty_folder_recommendations.py tests/test_receivable_workplace.py -q --tb=short --junitxml=/tmp/mm-fifo-focused-20260910.xml",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-final-focused-20260910.log",
+      "log_sha256": "45b28b5bdc48647dc3cf20b3405723d7cf7d107cf1ae3d170e4db0d2bae91834",
+      "tests": 172,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 172,
+      "seconds": 27.622,
+      "started_at": "2026-09-10T09:21:39.672516+03:00",
+      "xml_sha256": "04c7aa699af438f55489c12be81ea2d51f9ca5445c23c7dc97c1f47b2e59f7f7",
+      "observed_result": "172 passed, 0 skipped, 0 failures, 0 errors"
+    },
+    {
+      "id": "ruff",
+      "command": "/opt/MM/pricing-service/.venv/bin/python -m ruff check .",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-ruff-20260910.log",
+      "log_sha256": "ea5e1e76d6275a7eb3ab4fa90fb6e9ed8c6cdb58b13e045c28712b32645afed0",
+      "observed_result": "PASS; команда завершилась с кодом 0."
+    },
+    {
+      "id": "black",
+      "command": "BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check .",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-black-20260910.log",
+      "log_sha256": "9a5885f60220949d2fd2701b4628558d3c1ecb780e4badb98989c34e8ad940bd",
+      "observed_result": "PASS; команда завершилась с кодом 0."
+    },
+    {
+      "id": "openapi",
+      "command": "/opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-openapi-20260910.log",
+      "log_sha256": "97ff6e6edab6707e26c45327493fc76687cff1fe37e903b0d1ffd5d180527b4e",
+      "observed_result": "PASS; команда завершилась с кодом 0."
+    },
+    {
+      "id": "full-tests",
+      "command": "TMPDIR=/dev/shm timeout 600 /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short --basetemp=/dev/shm/mm-fifo-full-pytest-20260910 --junitxml=/tmp/mm-fifo-full-20260910.xml",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-final-full-20260910.log",
+      "log_sha256": "e7bbde93c4dcd87bc31bf85ccda48ae7bad9d2c6537e688db9888f77835b0e29",
+      "tests": 4039,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 37,
+      "passed": 4002,
+      "seconds": 516.827,
+      "started_at": "2026-09-10T09:22:59.791086+03:00",
+      "xml_sha256": "b6cdca8e68458a57cd06d1c6e7746241e51c55d6a151b4010326b9e21cea0ea4",
+      "observed_result": "4002 passed, 37 skipped, 0 failures, 0 errors"
+    },
+    {
+      "id": "project-docs",
+      "command": "python scripts/validate_project_docs.py pricing-service",
+      "exit_code": 0,
+      "log": "/tmp/mm-fifo-docs-project-20260910.log",
+      "log_sha256": "55cc93f3719069ad3b8cb4f214f84d639ae7c25cd96f58ba0373d93bd8074494",
+      "observed_result": "PASS; команда завершилась с кодом 0."
+    }
+  ],
+  "code_sha256": {
+    "app/services/receivable_canonical_debt_origin.py": "b44bf9a948348f500523ea74bbfb8e6ddc6a6b32761ba7d0725d39b7c1140819",
+    "app/services/receivable_workplace_cache.py": "f2727ec683228661752e2c40a8bb7b2245c7ce35809af3f8809d4666222279fd",
+    "app/services/receivable_workflow.py": "222259a2838ad2c040b575f4aa24a85c3ecf6d4a2427256ab54d48b0c599c48f",
+    "app/services/receivable_workplace.py": "97da4eea55b09fd37a9ce69c8c7e00c144acc8366fc61a3e449c7700e26a339d",
+    "scripts/ensure_receivable_bitrix_process.py": "967f2a112e726c625a805ba8bf74d5e45ba497a142889767d12c8b2657fb49df",
+    "tests/test_receivable_fifo.py": "59230a9d976680c178fb386b8dd41145a7d5821cdcb481d83a30778a8987c1c6",
+    "tests/test_receivable_workflow.py": "d2af632eede3e9c137951bb43642b99058a8405e36cc9a05cbf5d96544953fd4",
+    "tests/test_receivable_workplace.py": "0c1af66b6fd0eb275d41bbd169f1d69fefa0bbde7ce16a6cc6a8c28884943c4d",
+    "tests/test_receivable_bitrix_process.py": "84d76d19b7d8b7bc1eff2d98bb3ed2225978ccafa2989e800f55921eeab95d04",
+    "tests/test_counterparty_folder_recommendations.py": "95cf79fd381bef965985bbb580c31862d5a5d6b181e9b00dd7f6dfa213d5f793"
+  },
+  "shadow_read_only": {
+    "snapshot_date": "2026-09-10",
+    "bitrix_item_id": 29,
+    "resolution_status": "matched",
+    "balance": "1046071.21",
+    "document_total": "1046071.21",
+    "previous_documents": 8,
+    "fifo_documents": 6,
+    "oldest_document_date": "2026-08-17T11:06:32",
+    "oldest_open_amount": "552679.21",
+    "age_days": 24,
+    "writes": 0
+  },
+  "shadow_source_log": {
+    "path": "/tmp/mm-fifo-shadow-readonly-20260910.json",
+    "sha256": "991eb8669a9102db12eac162470ef68f2e5b369f5433d49badb7db33698c1d32",
+    "visibility": "private audit; source documents are not included in Git publication"
+  },
+  "independent_code_review": {
+    "context_id": "01a089fa-8f37-7a22-a0c8-7798447dfc24",
+    "verdict": "code-review PASS",
+    "scope": "local code only; no rollout verdict",
+    "fifo_tests_passed": 24
+  }
+}

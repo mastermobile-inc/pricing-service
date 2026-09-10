@@ -405,7 +405,7 @@ def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
     assert item.effective_overdue_days == 6
     assert item.no_phone_marker is True
     assert item.staff_options[0].staff_ref == "staff-1"
-    assert item.documents[0].document_number == "РБГУ0001"
+    assert item.documents == []
     status_options = {option.value: option.label for option in result.status_options}
     assert status_options["not_ours_transfer"] == (
         "Не наш, прошу перенести ответственным "

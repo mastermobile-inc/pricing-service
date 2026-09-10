@@ -11,7 +11,7 @@ from sqlalchemy import text
 from app.services.receivables import _build_ref_filter_clause, _hex_ref_expr, _with_nolock
 
 CANONICAL_DEBT_HISTORY_START = date(2025, 1, 1)
-CANONICAL_DEBT_SELECTION_RULE = "onec_canonical_continuous_balance_origin"
+CANONICAL_DEBT_SELECTION_RULE = "onec_canonical_fifo_settlements_v1"
 CANONICAL_DEBT_STATUS_MATCHED = "matched"
 CANONICAL_DEBT_STATUS_BALANCE_MISMATCH = "canonical_balance_mismatch"
 CANONICAL_DEBT_STATUS_ORIGIN_BEFORE_HISTORY = "origin_before_history"
@@ -95,9 +95,9 @@ def resolve_canonical_debt_origin(
     """Resolve debt documents from a continuous full 1C mutual-settlement balance.
 
     The end-of-day balance deliberately ignores transient negative rows created by
-    same-day reposting. Once the last stable non-positive day is found, sales are
-    allocated oldest-first until their exact open amounts cover the canonical current
-    balance. A disagreement of more than one kopeck is never guessed through.
+    same-day reposting. Within the current debt cycle, settlements close sales
+    oldest-first, including partial payments and credit carried into the cycle.
+    A disagreement of more than one kopeck is never guessed through.
     """
 
     opening = _money(opening_balance)
@@ -144,18 +144,26 @@ def resolve_canonical_debt_origin(
             last_nonpositive_day=None,
         )
 
+    candidates = sorted(
+        (
+            candidate
+            for candidate in sale_candidates
+            if candidate.document_date.date() > last_nonpositive_day
+            and _money(candidate.gross_amount) > Decimal("0.00")
+        ),
+        key=lambda item: (item.document_date, item.document_ref),
+    )
+    gross_total = sum((_money(candidate.gross_amount) for candidate in candidates), Decimal("0"))
+    remaining_closing = max(_money(gross_total - expected), Decimal("0.00"))
     remaining = expected
     documents: list[CanonicalOpenDebtDocument] = []
-    for candidate in sorted(
-        sale_candidates,
-        key=lambda item: (item.document_date, item.document_ref),
-    ):
-        if candidate.document_date.date() <= last_nonpositive_day:
-            continue
+    for candidate in candidates:
         gross_amount = _money(candidate.gross_amount)
-        if gross_amount <= Decimal("0.00"):
+        closing_amount = min(gross_amount, remaining_closing)
+        remaining_closing = _money(remaining_closing - closing_amount)
+        open_amount = _money(gross_amount - closing_amount)
+        if open_amount <= Decimal("0.00"):
             continue
-        open_amount = min(gross_amount, remaining)
         documents.append(
             CanonicalOpenDebtDocument(
                 document_ref=candidate.document_ref,
@@ -163,12 +171,10 @@ def resolve_canonical_debt_origin(
                 document_date=candidate.document_date,
                 open_amount=open_amount,
                 gross_amount=gross_amount,
-                closing_amount=_money(open_amount - gross_amount),
+                closing_amount=-closing_amount,
             )
         )
         remaining = _money(remaining - open_amount)
-        if remaining <= Decimal("0.00"):
-            break
 
     status = (
         CANONICAL_DEBT_STATUS_MATCHED
