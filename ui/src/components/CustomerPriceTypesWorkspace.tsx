@@ -148,6 +148,7 @@ export function CustomerPriceTypesWorkspace({
     useState<Exclude<CptPortfolioBucket, "all">>("working_bronze");
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
   const [section, setSection] = useState<"portfolio" | "quality">("portfolio");
+  const trimmedSearch = search.trim();
 
   const summaryQuery = useQuery({
     queryKey: ["cpt", "summary"],
@@ -167,8 +168,13 @@ export function CustomerPriceTypesWorkspace({
       }),
   });
   const casesQuery = useQuery({
-    queryKey: ["cpt", "cases", worklist, search],
-    queryFn: () => fetchCptCases({ worklist, search: search.trim() || null, limit: 50 }),
+    queryKey: ["cpt", "cases", worklist, trimmedSearch],
+    queryFn: () => fetchCptCases({ worklist, search: trimmedSearch || null, limit: 50 }),
+  });
+  const portfolioLookupQuery = useQuery({
+    queryKey: ["cpt", "case-portfolio-lookup", trimmedSearch],
+    queryFn: () => searchCptProfiles(trimmedSearch),
+    enabled: trimmedSearch.length >= 2,
   });
   const caseDetailQuery = useQuery({
     queryKey: ["cpt", "case", selectedCaseId],
@@ -180,6 +186,12 @@ export function CustomerPriceTypesWorkspace({
   const worklists = worklistsQuery.data?.worklists ?? {};
   const month = summaryQuery.data?.snapshot_month ?? worklistsQuery.data?.snapshot_month ?? null;
   const detail = caseDetailQuery.data;
+  const caseRows = casesQuery.data?.payload ?? [];
+  const caseRefs = new Set(caseRows.map((row) => row.counterparty_ref));
+  const portfolioMatches = (portfolioLookupQuery.data?.payload ?? []).filter(
+    (item) => !caseRefs.has(item.counterparty_ref)
+  );
+  const searchActive = trimmedSearch.length >= 2;
   const canViewQuality =
     role === "internal" || role === "executive" || role === "network_head" || role === "quality";
   const canViewTechnicalWorkspace = role === "internal" || role === "executive" || role === "quality";
@@ -232,15 +244,24 @@ export function CustomerPriceTypesWorkspace({
       </header>
 
       {/* Summary tiles */}
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
-        <Tile label="Клиентов" value={summary?.profile_count} loading={summaryQuery.isLoading} />
-        <Tile label="В работу" value={summary?.actionable_count} loading={summaryQuery.isLoading} accent />
-        {summary &&
-          ["retail", "bronze", "silver", "gold", "platinum"].map((lvl) =>
-            summary.levels[lvl] ? (
-              <Tile key={lvl} label={levelLabel(lvl)} value={summary.levels[lvl]} />
-            ) : null
-          )}
+      <section aria-labelledby="cpt-summary-heading" style={{ display: "grid", gap: 6 }}>
+        <h2 id="cpt-summary-heading" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--color-text-muted, #667085)" }}>
+          Портфель в цифрах
+        </h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+          <Tile label="Клиентов" value={summary?.profile_count} loading={summaryQuery.isLoading} />
+          <Tile label="В работу" value={summary?.actionable_count} loading={summaryQuery.isLoading} accent />
+          {summary &&
+            ["retail", "bronze", "silver", "gold", "platinum"].map((lvl) =>
+              summary.levels[lvl] ? (
+                <Tile key={lvl} label={levelLabel(lvl)} value={summary.levels[lvl]} />
+              ) : null
+            )}
+        </div>
+        <p style={{ margin: 0, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          Это справочные счётчики, они не нажимаются. Рабочие очереди ниже — их можно
+          выбирать. Конкретного клиента ищите через поиск: он идёт по всему портфелю.
+        </p>
       </section>
 
       {canViewTechnicalWorkspace && <section style={{ ...card, display: "grid", gap: 12 }}>
@@ -385,7 +406,8 @@ export function CustomerPriceTypesWorkspace({
           <strong>{worklist ? WORKLIST_LABELS[worklist] : "Все кейсы, требующие действий"}</strong>
           <input
             type="search"
-            placeholder="Поиск по коду РБ, имени…"
+            aria-label="Поиск клиента по всему портфелю"
+            placeholder="Поиск по всему портфелю: код 1С или имя…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             style={{
@@ -439,7 +461,15 @@ export function CustomerPriceTypesWorkspace({
                 ))}
                 {casesQuery.data.payload.length === 0 && (
                   <tr>
-                    <td style={td} colSpan={5}>Кейсов не найдено.</td>
+                    <td style={td} colSpan={5}>
+                      {!searchActive
+                        ? "Кейсов не найдено."
+                        : portfolioLookupQuery.isLoading
+                          ? "Ищем клиента по всему портфелю…"
+                          : portfolioMatches.length > 0
+                            ? "В ваших рабочих очередях совпадений нет. Клиент найден в портфеле — смотрите ниже."
+                            : "Клиент не найден ни в очередях, ни в портфеле. Проверьте код 1С или попробуйте часть имени."}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -447,6 +477,43 @@ export function CustomerPriceTypesWorkspace({
             <p style={{ margin: "8px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
               Показано {casesQuery.data.payload.length} из {casesQuery.data.total}.
             </p>
+          </div>
+        )}
+
+        {searchActive && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {portfolioLookupQuery.isError && (
+              <p style={{ margin: 0, color: "var(--color-danger, #d92d20)" }}>
+                Не удалось выполнить поиск по портфелю.
+              </p>
+            )}
+            {portfolioMatches.length > 0 && (
+              <>
+                <strong style={{ fontSize: 14 }}>
+                  Найдены в портфеле, вне ваших рабочих очередей: {portfolioMatches.length}
+                </strong>
+                {portfolioMatches.map((item) => (
+                  <div key={item.counterparty_ref} style={{ ...card, padding: 12 }}>
+                    <div style={{ fontWeight: 700 }}>
+                      {item.counterparty_code ?? "—"} · {item.counterparty_name ?? "—"}
+                    </div>
+                    <div style={{ marginTop: 3, fontSize: 13 }}>{item.result_label}</div>
+                    <small style={{ color: "var(--color-text-muted, #667085)" }}>
+                      Текущий тип: {item.current_price_type ?? "не определён"}
+                      {item.result_state === "change_proposed"
+                        ? ` · Предлагается: ${item.recommended_price_type ?? "—"}`
+                        : ""}
+                    </small>
+                    {item.result_state === "data_issue" && (
+                      <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--color-text-muted, #667085)" }}>
+                        Тип цены не меняется, пока данные не исправлены. Решение по этому
+                        клиенту от вас не требуется — карточкой занимается техническая команда.
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
       </section>
