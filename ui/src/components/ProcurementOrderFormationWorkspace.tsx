@@ -867,7 +867,9 @@ export function LifecycleQueue({
                             ? item.current_status === "newborn"
                               ? statusScreenLabel("newborn_need")
                               : `${statusScreenLabel("working")} → Разбор`
-                            : `${item.current_status_label} → ${item.target_status_label}`}
+                            : item.target_status_label
+                              ? `${item.current_status_label} → ${item.target_status_label}`
+                              : item.current_status_label}
                         </span>
                       </td>
                       <td className="queue-reason">
