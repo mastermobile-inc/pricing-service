@@ -131,6 +131,7 @@ const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
   fruit: "Рассматриваем",
   newborn: "Заказали",
   newborn_need: "Добираем",
+  in_transit: "В пути",
   new_item: "Завезли",
   sales_start: "Пошли продажи",
   sale: "Растим",

@@ -70,7 +70,15 @@ from app.services.procurement_supplier_profiles import (
 
 DISPLAY_FOLDER = "дисплеи"
 DISPLAY_RESPONSIBLE_NAME = "Омар"
-LIFECYCLE_ORDER = ("fruit", "newborn", "new_item", "sales_start", "sale", "working")
+LIFECYCLE_ORDER = (
+    "fruit",
+    "newborn",
+    "in_transit",
+    "new_item",
+    "sales_start",
+    "sale",
+    "working",
+)
 # Подписи витрины: действующее название статуса. Прежнее живёт рядом в
 # LIFECYCLE_LEGACY_LABELS и показывается на карточке отдельной строкой —
 # решение пользователя 2026-08-19.
@@ -78,6 +86,7 @@ LIFECYCLE_LABELS = {
     "fruit": ASSORTMENT_STATUS_LABELS[AssortmentStatus.FRUIT],
     "newborn": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEWBORN],
     "newborn_need": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEWBORN_NEED],
+    "in_transit": ASSORTMENT_STATUS_LABELS[AssortmentStatus.IN_TRANSIT],
     "new_item": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEW_ITEM],
     "sales_start": ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALES_START],
     "sale": ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE],
