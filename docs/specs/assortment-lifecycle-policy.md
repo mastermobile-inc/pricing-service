@@ -39,6 +39,11 @@ depends_on:
   - docs/specs/onec-stock-effective-availability.md
 supersedes: []
 rollout_required: true
+delivery_control:
+  risk: medium
+  phase_records: [docs/phases/assortment-lifecycle-in-transit-stage.yml]
+  evidence_records: [docs/evidence/assortment-lifecycle-in-transit-stage.yml]
+  review_records: []
 updated_at: "2026-09-11"
 ---
 

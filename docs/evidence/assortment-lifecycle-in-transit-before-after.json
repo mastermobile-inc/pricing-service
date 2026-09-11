@@ -1,0 +1,90 @@
+{
+  "database_write": false,
+  "external_write": false,
+  "buckets": {
+    "fresh_display_run": {
+      "cards": 2744,
+      "changed": 39,
+      "transitions": [
+        {
+          "from": "newborn",
+          "from_label": "Заказали",
+          "to": "new_item",
+          "to_label": "Завезли",
+          "count": 20,
+          "samples": [
+            "РБ000060494 · Матрица для Apple MacBook 12 Retina A1534 (EARLY",
+            "РБ000073892 · Дисплей для Samsung S942 Galaxy S26 + тачскрин (",
+            "РБ000057662 · Матрица в сборе для Apple MacBook Pro 15 A1707 ("
+          ]
+        },
+        {
+          "from": "new_item",
+          "from_label": "Завезли",
+          "to": "in_transit",
+          "to_label": "В пути",
+          "count": 14,
+          "samples": [
+            "РБ000060026 · Дисплей для Samsung G981 Galaxy S20 5G + тачскри",
+            "РБ000060027 · Дисплей для Samsung G981 Galaxy S20 5G + тачскри",
+            "РБ000063567 · Дисплей для OnePlus 13R (CPH2645) / Ace 5 Pro (P"
+          ]
+        },
+        {
+          "from": "fruit",
+          "from_label": "Рассматриваем",
+          "to": "new_item",
+          "to_label": "Завезли",
+          "count": 5,
+          "samples": [
+            "РБ000076026 · Дисплей для Xiaomi 17 Ultra (25128PNA1G) + тачск",
+            "РБ000076276 · Дисплей для Huawei Mate 80 Pro (SGT-LX9) + тачск",
+            "РБ000072344 · Дисплей для Xiaomi Redmi K80 Ultra (25060RK16C) "
+          ]
+        }
+      ]
+    },
+    "frozen_full_catalog_snapshot": {
+      "cards": 44886,
+      "changed": 6124,
+      "transitions": [
+        {
+          "from": "new_item",
+          "from_label": "Завезли",
+          "to": "in_transit",
+          "to_label": "В пути",
+          "count": 5340,
+          "samples": [
+            "РБ000036959 · Дисплей для Nokia 7.1 (TA-1095) (в сборе с тачск",
+            "РБ000056076 · Шлейф для Samsung F946 Galaxy Z Fold 5 с комп. (",
+            "РБ000056114 · Стекло задней камеры для Huawei Honor X9b (ALI-N"
+          ]
+        },
+        {
+          "from": "newborn",
+          "from_label": "Заказали",
+          "to": "new_item",
+          "to_label": "Завезли",
+          "count": 399,
+          "samples": [
+            "РБ000056954 · Батарейки GP Super LR6 AA 4 шт.",
+            "РБ000056087 · Беспроводное зарядное устройство Remax RP-W70 22",
+            "РБ000056088 · Сетевое зарядное устройство (СЗУ) Remax RP-U120 "
+          ]
+        },
+        {
+          "from": "fruit",
+          "from_label": "Рассматриваем",
+          "to": "new_item",
+          "to_label": "Завезли",
+          "count": 385,
+          "samples": [
+            "РБ000064668 · Дисплей для Samsung A346 Galaxy A34 5G + тачскри",
+            "РБ000037125 · Рамка дисплея для Huawei Honor 7A Pro (AUM-L29) ",
+            "РБ000030011 · Дисплей для Xiaomi Mi 4 (2014215) (в сборе с тач"
+          ]
+        }
+      ]
+    }
+  }
+}

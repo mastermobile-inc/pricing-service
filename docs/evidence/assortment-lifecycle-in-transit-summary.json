@@ -1,0 +1,22 @@
+{
+  "phase_id": "assortment-lifecycle.in-transit-stage",
+  "observed_at": "2026-09-11T13:15:49+03:00",
+  "workspace": "/opt/MM/.worktrees/lifecycle-in-transit-20260911",
+  "source_commit": "58780b2561b912ff65cb908d1c3167f7cfceb560",
+  "active_release": "procurement-catalog-app-20260910-58780b2",
+  "safety": {
+    "database_write": false,
+    "onec_write": false,
+    "bitrix_write": false,
+    "release_switch": false
+  },
+  "verifications": {
+    "lifecycle-formula-tests": {"exit_code": 0, "observed": "41 passed"},
+    "procurement-backend-tests": {"exit_code": 0, "observed": "135 passed"},
+    "workspace-ui-tests": {"exit_code": 0, "observed": "1 file passed, 16 tests passed"},
+    "style-checks": {"exit_code": 0, "observed": "ruff: All checks passed; black: 5 files would be left unchanged"},
+    "openapi-schema": {"exit_code": 0, "observed": "openapi.yaml matches FastAPI schema"},
+    "before-after-dry-run": {"exit_code": 0, "observed": "fresh_display_run: 2744 карточки, 39 изменений; frozen_full_catalog_snapshot: 44886 карточек, 6124 изменения"}
+  },
+  "before_after_report": "docs/evidence/assortment-lifecycle-in-transit-before-after.json"
+}
