@@ -333,6 +333,37 @@ describe("LifecycleQueue manual decision", () => {
     expect(toast.success).toHaveBeenCalledWith("Карточка переведена в «Допродаём»");
   });
 
+  it("для строки-снимка показывает статус без стрелки и без null", async () => {
+    const data = lifecycleQueue();
+    data.items[0] = {
+      ...data.items[0],
+      proposal_id: null,
+      action_kind: "view",
+      current_status: "in_transit",
+      current_status_label: "В пути",
+      target_status: null,
+      target_status_label: null,
+      product_name: "Дисплей для Infinix Hot 70 Pro (X6896) + тачскрин (черный) (ORIG)",
+      reason: "Первый заказ поставщику сдан в cargo, товар едет — поступления ещё не было.",
+      decision_state: "view",
+      actionability: "manual_decision",
+    };
+    vi.mocked(fetchProcurementLifecycleTransitions).mockResolvedValue(data);
+
+    render(
+      <LifecycleQueue
+        initialReadiness="review"
+        onClose={vi.fn()}
+        scope="action"
+        status="in_transit"
+      />
+    );
+
+    expect(await screen.findByText("В пути")).toBeInTheDocument();
+    expect(screen.queryByText(/null/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/В пути →/)).not.toBeInTheDocument();
+  });
+
   it("позволяет оставить карточку рабочей с обязательной причиной", async () => {
     const data = lifecycleQueue();
     vi.mocked(fetchProcurementLifecycleTransitions).mockResolvedValue(data);

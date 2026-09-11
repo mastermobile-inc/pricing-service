@@ -1,0 +1,42 @@
+version: 1
+record_type: evidence
+evidence_id: assortment-lifecycle.in-transit-stage.observed
+phase_id: assortment-lifecycle.in-transit-stage
+spec: docs/specs/assortment-lifecycle-policy.md
+observed_at: '2026-09-11T13:15:49+03:00'
+environment:
+  workspace: /opt/MM/.worktrees/lifecycle-in-transit-20260911
+  source_commit: 58780b2561b912ff65cb908d1c3167f7cfceb560
+  runtime: pricing-service candidate; база pricing (только чтение); формула «до» из активного релиза procurement-catalog-app-20260910-58780b2
+result: passed
+verifications:
+- id: lifecycle-formula-tests
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle.py -q
+  exit_code: 0
+  observed_result: 41 проверка формулы пройдена, включая страж на фактах РБ000076661.
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json
+- id: procurement-backend-tests
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle.py tests/test_assortment_lifecycle_facts.py tests/test_procurement_order_formation.py tests/test_procurement_order_formation_workspace.py tests/test_procurement_order_formation_api.py -q
+  exit_code: 0
+  observed_result: '135 проверок пройдено: факты, витрина и API формирования заказа.'
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json
+- id: workspace-ui-tests
+  command: cd ui && npx vitest run src/components/ProcurementOrderFormationWorkspace.test.tsx
+  exit_code: 0
+  observed_result: 16 проверок экрана пройдено; строка-снимок показывает «В пути» без стрелки и без null.
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json
+- id: style-checks
+  command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle.py app/services/procurement_order_formation.py app/services/procurement_order_formation_workspace.py tests/test_assortment_lifecycle.py docs/evidence/assortment-lifecycle-in-transit-before-after.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle.py app/services/procurement_order_formation.py app/services/procurement_order_formation_workspace.py tests/test_assortment_lifecycle.py docs/evidence/assortment-lifecycle-in-transit-before-after.py
+  exit_code: 0
+  observed_result: 'Ruff: All checks passed. Black: 5 files would be left unchanged.'
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json
+- id: openapi-schema
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check
+  exit_code: 0
+  observed_result: 'ok: openapi.yaml matches FastAPI schema.'
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json
+- id: before-after-dry-run
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python docs/evidence/assortment-lifecycle-in-transit-before-after.py
+  exit_code: 0
+  observed_result: 'Без записи в базу и внешние системы. Свежий прогон дисплеев: 2744 карточки, 39 изменений (20 Заказали→Завезли, 14 Завезли→В пути, 5 Рассматриваем→Завезли). Замороженный снимок всего каталога: 44886 карточек, 6124 изменения, из них 5340 Завезли→В пути.'
+  artifact: docs/evidence/assortment-lifecycle-in-transit-summary.json

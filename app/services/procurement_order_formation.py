@@ -67,6 +67,7 @@ MANUAL_STATUS_LABELS = {
 LIFECYCLE_STATUS_LABELS = {
     "fruit": "Плод",
     "newborn": "Новорожденный",
+    "in_transit": "В пути",
     "new_item": "Новинка",
     "sales_start": "СП",
     "sale": "Продажа",

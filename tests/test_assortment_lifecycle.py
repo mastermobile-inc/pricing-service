@@ -40,17 +40,33 @@ def test_assortment_lifecycle_status_ladder() -> None:
         _decision(first_supplier_order_at=date(2026, 1, 10), has_need_signal=True).status
         == AssortmentStatus.NEWBORN_NEED
     )
-    new_item = _decision(supplier_order_cargo_handoff_dates=(date(2026, 1, 20),))
+    # Решение 2026-09-11: cargo подтверждает отправку, а не приход. Пока
+    # поступления нет, карточка стоит в «В пути».
+    in_transit = _decision(supplier_order_cargo_handoff_dates=(date(2026, 1, 20),))
+    assert in_transit.status == AssortmentStatus.IN_TRANSIT
+    assert not in_transit.auto_order_allowed
+
+    new_item = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20),),
+        receipt_dates=(date(2026, 2, 15),),
+    )
     assert new_item.status == AssortmentStatus.NEW_ITEM
     assert not new_item.auto_order_allowed
 
+    # Поступление засчитывается и без отметки cargo: местная закупка или довоз.
+    receipt_without_cargo = _decision(
+        first_supplier_order_at=date(2026, 1, 10),
+        receipt_dates=(date(2026, 2, 15),),
+    )
+    assert receipt_without_cargo.status == AssortmentStatus.NEW_ITEM
+
     # Второе карго само по себе больше НЕ даёт СП: статус называется "стартанули
-    # продажи" и с 2026-08-02 требует факта первой продажи. Без неё карточка
-    # остаётся Новинкой (товар едет или лежит, но не продавался).
+    # продажи" и с 2026-08-02 требует факта первой продажи. Без неё и без
+    # поступления карточка остаётся «В пути» (товар едет).
     second_cargo_no_sale = _decision(
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20))
     )
-    assert second_cargo_no_sale.status == AssortmentStatus.NEW_ITEM
+    assert second_cargo_no_sale.status == AssortmentStatus.IN_TRANSIT
 
     sales_start = _decision(
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
@@ -112,13 +128,47 @@ def test_four_receipts_do_not_reach_working() -> None:
     assert decision.status != AssortmentStatus.WORKING
 
 
+def test_new_item_requires_receipt_and_cargo_only_means_in_transit() -> None:
+    # Решение 2026-09-11: «Завезли» означает товар на складе. Факты взяты с
+    # реальной карточки РБ000076661 (Infinix Hot 70 Pro): первый заказ 24.07,
+    # сдача в cargo 28.08, ни одного поступления, продаж нет. Витрина показывала
+    # «Завезли», хотя товар ещё ехал.
+    in_transit = _decision(
+        first_supplier_order_at=date(2026, 7, 24),
+        supplier_order_cargo_handoff_dates=(date(2026, 8, 28),),
+        historical_first_cargo_handoff_at=date(2026, 8, 28),
+        receipt_dates=(),
+        sales_qty_short=Decimal("0"),
+        sales_qty_medium=Decimal("0"),
+        sales_qty_long=Decimal("0"),
+        as_of=date(2026, 9, 11),
+    )
+    assert in_transit.status == AssortmentStatus.IN_TRANSIT
+    assert "first_supplier_order_handed_to_cargo" in in_transit.reason_codes
+    assert not in_transit.auto_order_allowed
+
+    # Пришло первое поступление — только теперь «Завезли».
+    arrived = _decision(
+        first_supplier_order_at=date(2026, 7, 24),
+        supplier_order_cargo_handoff_dates=(date(2026, 8, 28),),
+        historical_first_cargo_handoff_at=date(2026, 8, 28),
+        receipt_dates=(date(2026, 9, 17),),
+        sales_qty_short=Decimal("0"),
+        sales_qty_medium=Decimal("0"),
+        sales_qty_long=Decimal("0"),
+        as_of=date(2026, 9, 20),
+    )
+    assert arrived.status == AssortmentStatus.NEW_ITEM
+    assert "first_receipt_registered" in arrived.reason_codes
+
+
 def test_sales_start_requires_first_sale_not_second_cargo() -> None:
     # На 2026-08-02 в статусе СП стояли 20 карточек из 112, не продав ни штуки:
     # старое условие давало "Старт продаж" по второму заказу, сданному в cargo.
     cargo = (date(2026, 1, 20), date(2026, 2, 20))
 
     without_sale = _decision(supplier_order_cargo_handoff_dates=cargo)
-    assert without_sale.status == AssortmentStatus.NEW_ITEM
+    assert without_sale.status == AssortmentStatus.IN_TRANSIT
     assert without_sale.reason_codes == (
         "first_supplier_order_handed_to_cargo",
         "demand_data_missing",
@@ -322,7 +372,13 @@ def test_every_status_has_label_and_no_orphan_labels() -> None:
 def test_every_status_keeps_its_previous_name_for_screens() -> None:
     # Решение пользователя 2026-08-19: на экране рядом с действующим названием
     # показывается прежнее, поэтому забытый статус — это потерянная подсказка.
-    assert set(ASSORTMENT_STATUS_LEGACY_LABELS) == set(AssortmentStatus)
+    # У этапа «В пути» прежнего названия нет: он появился 2026-09-11, когда
+    # «Завезли» перевели на первое поступление. Скобки ему не из чего собрать.
+    statuses_without_previous_name = {AssortmentStatus.IN_TRANSIT}
+    assert set(ASSORTMENT_STATUS_LEGACY_LABELS) == (
+        set(AssortmentStatus) - statuses_without_previous_name
+    )
+    assert status_display_label(AssortmentStatus.IN_TRANSIT) == "В пути"
     assert status_display_label(AssortmentStatus.WORKING) == "Поддерживаем (Рабочий)"
     assert status_display_label("fruit") == "Рассматриваем (Плод)"
     # Данные остаются без скобок: их читает не человек, а сопоставление строк.
