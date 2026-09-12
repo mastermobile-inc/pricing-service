@@ -1,0 +1,32 @@
+version: 1
+record_type: evidence
+evidence_id: assortment-lifecycle.order-corrections.observed
+phase_id: assortment-lifecycle.order-corrections
+spec: docs/specs/assortment-lifecycle-policy.md
+observed_at: '2026-09-12T16:34:19+03:00'
+environment:
+  workspace: /opt/MM/.worktrees/order-corrections-20260912
+  source_commit: 5cf426ead2bc (база активного релиза site-service-close-gate-20260912-5cf426e)
+  runtime: pricing-service candidate; 1С Ekama только чтение; база pricing без записи (dry-run)
+result: passed
+verifications:
+- id: facts-tests
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle_facts.py tests/test_assortment_lifecycle.py -q
+  exit_code: 0
+  observed_result: '57 проверок пройдено: отсев снятых позиций, сохранение частичной отправки, формула статусов.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-dry-run.json
+- id: schema-gate
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -c "import json,os;from dotenv import load_dotenv;load_dotenv('/opt/MM/pricing-service/.env');from sqlalchemy import create_engine;from app.services.assortment_lifecycle_facts import DocumentLineMapping,validate_document_line_mapping;print(validate_document_line_mapping(create_engine(os.environ['ONEC_DATABASE_URL']),DocumentLineMapping.from_mapping(json.load(open('config/assortment/display-supplier-order-line-mapping.json')))))"
+  exit_code: 0
+  observed_result: 'Проверка на живой базе вернула пустой список замечаний: таблицы и колонки корректировок на месте.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-dry-run.json
+- id: style-checks
+  command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle_facts.py tests/test_assortment_lifecycle_facts.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle_facts.py tests/test_assortment_lifecycle_facts.py
+  exit_code: 0
+  observed_result: 'Ruff: All checks passed. Black: файлы без изменений.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-dry-run.json
+- id: classification-dry-run
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m tasks.refresh_assortment_lifecycle_classification --folder дисплеи --dry-run --json
+  exit_code: 0
+  observed_result: 'Расчёт выполнен без записи в базу. Детальный внутренний отчёт и распределения статусов сохранены только на сервере; публичный артефакт содержит технический итог.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-dry-run.json
