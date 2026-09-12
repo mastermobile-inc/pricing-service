@@ -4,5 +4,12 @@
   "line_document_column": "_Document133_IDRRef",
   "line_nomenclature_column": "_Fld2523RRef",
   "line_price_column": "_Fld2529",
-  "cargo_handoff_column": "_Fld8852"
+  "cargo_handoff_column": "_Fld8852",
+  "line_quantity_column": "_Fld2520",
+  "correction_document_table": "_Document163",
+  "correction_line_table": "_Document163_VT3291",
+  "correction_order_column": "_Fld3276RRef",
+  "correction_line_document_column": "_Document163_IDRRef",
+  "correction_nomenclature_column": "_Fld3298RRef",
+  "correction_quantity_column": "_Fld3295"
 }
