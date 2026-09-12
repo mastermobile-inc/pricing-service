@@ -1,0 +1,57 @@
+{
+  "observed_at": "2026-09-12T16:14:06+03:00",
+  "source_commit": "b12c8f4",
+  "assortment_test_commit": "e65d6b8",
+  "pull_request": 189,
+  "production_changed": false,
+  "full_tests": {
+    "tests": 4072,
+    "passed": 4035,
+    "skipped": 37,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "xml_sha256": "a45564102a4a3bcb949e54d49cbd67217a519e07e5c10fbfa0e4c38b87718f10",
+    "log_sha256": "aa334daacc5da93ca78a0a5ce49a198ad0909d28c4ae7e825f84de5e7b2d3db2"
+  },
+  "focused_tests": {
+    "passed": 73,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "xml_sha256": "05e13d38ff15c1f0661774eb780e9590b4c6837b1a5bf6c60854f16b5a75b90a"
+  },
+  "checks": {
+    "ruff": "passed",
+    "black": "passed; one worker",
+    "openapi": "passed",
+    "production_renderer": "48 assertions passed; no renderer file changes",
+    "candidate_docs": "83 manifest documents and project specs/delivery records validated"
+  },
+  "independent_review": {
+    "context_id": "01a09595-5bcf-7a43-9a77-6840910cf9b2",
+    "verdict": "source/preparation PASS; not production PASS",
+    "fifo_hashes_matched": 10
+  },
+  "proposed_plan": {
+    "cache_rows": 3100,
+    "existing_cards": 2275,
+    "active_confirmed": 944,
+    "active_unknown": 196,
+    "active_existing_source_disagreement": 1,
+    "closed_age_only_pending_approval": 1134
+  },
+  "blockers": [
+    "Нет отдельного подтверждения очистки только age_days у закрытых карточек перед сменой общей подписи."
+  ],
+  "proof_gaps": [
+    "Авторизованная пользовательская оболочка CRM и переход из placement 184 не проверены; прямая рабочая форма проверена с реальными API и техническим токеном."
+  ],
+  "qa_correction": "Первоначальная standalone-проба dashboard использовала несуществующий /executive-dashboard/ и получила 404. Это ошибка адреса теста, не доказательство дефекта рабочего dashboard.",
+  "remaining": [
+    "Подтверждение обработки возраста закрытых циклов",
+    "CI/merge, штатная сборка и установка",
+    "Сверенный backup и узкое обновление полей без SMS/сумм/статусов",
+    "Readback и повторный аудит установленной версии"
+  ]
+}

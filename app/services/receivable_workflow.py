@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models import ReceivableCase, ReceivableSmsLog, ReceivableWorkEvent, ReceivableWorkItem
 from app.services.expertise_bitrix import BitrixRestClient
-from app.services.receivable_workplace_cache import load_cached_open_debt_documents
+from app.services.receivable_workplace_cache import (
+    load_cached_open_debt_documents,
+    open_debt_document_date,
+    ordered_open_debt_documents,
+)
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 
 STATUS_NEW_DEBT = "new_debt"
@@ -202,10 +206,14 @@ def debt_key_for_case(case: ReceivableCase) -> str:
     return f"{stable_key_for_counterparty(case.counterparty_ref)}|{document_part}"
 
 
-def debt_age_days(case: ReceivableCase, *, as_of: date) -> int | None:
-    if case.origin_document_date is None:
+def debt_age_days(documents: Sequence[dict[str, Any]] | None, *, as_of: date) -> int | None:
+    dates = [
+        open_debt_document_date(document) for document in ordered_open_debt_documents(documents)
+    ]
+    if not dates or any(document_date is None for document_date in dates):
         return None
-    return max((as_of - case.origin_document_date.date()).days, 0)
+    oldest_date = min(document_date for document_date in dates if document_date is not None)
+    return max((as_of - oldest_date.date()).days, 0)
 
 
 def _due_date(case: ReceivableCase) -> date | None:
@@ -666,6 +674,7 @@ def _chain_document_label(event_type: str | None) -> str:
 
 def _open_debt_rule_label(value: Any) -> str:
     labels = {
+        "onec_canonical_fifo_settlements_v1": "погашение от старых документов к новым",
         "statement_direct_payment_match": "закрыто ближайшей оплатой",
         "statement_multi_sale_payment_match": "группа закрыта одной оплатой",
         "statement_bottom_up_balance_cutoff": "подбор от текущего остатка",
@@ -1017,6 +1026,7 @@ def _update_work_item_from_case(
     phone_by_counterparty: dict[str, str],
     settings: Settings,
     summary: ReceivableWorkflowSummary,
+    open_debt_documents: list[dict[str, Any]],
 ) -> None:
     old_balance = item.current_balance
     old_status = item.status
@@ -1046,7 +1056,7 @@ def _update_work_item_from_case(
     item.overdue_days = (
         max((as_of - effective_due_at.date()).days, 0) if effective_due_at is not None else None
     )
-    item.age_days = debt_age_days(case, as_of=as_of)
+    item.age_days = debt_age_days(open_debt_documents, as_of=as_of)
     item.origin_manager_ref = case.origin_manager_ref
     item.origin_manager_name = case.origin_manager_name
     item.current_manager_ref = case.current_manager_ref
@@ -1056,7 +1066,7 @@ def _update_work_item_from_case(
     item.phone = phone
     item.phone_status = "present" if phone else "missing"
     item.needs_call_today = bool(item.overdue_days and item.overdue_days > 0)
-    item.chain_documents = case.chain_documents or []
+    item.chain_documents = open_debt_documents
     preserved_payload = {}
     if isinstance(item.payload, dict):
         preserved_payload = {
@@ -1326,6 +1336,11 @@ def sync_receivable_workflow(
         stable_key = stable_key_for_counterparty(counterparty_ref)
         case = _select_current_case(counterparty_cases)
         counterparty_ref_key = str(counterparty_ref or "").strip().casefold()
+        if counterparty_ref_key in open_debt_cache.outdated_counterparty_refs:
+            protected_stable_keys.add(stable_key)
+            summary.data_quality_skipped += 1
+            summary.errors.append(f"Open debt cache requires FIFO rebuild: {counterparty_ref}")
+            continue
         is_document_mismatch = counterparty_ref_key in document_mismatch_counterparty_refs
         if not _case_matches_department_scope(case, settings):
             continue
@@ -1410,6 +1425,7 @@ def sync_receivable_workflow(
             phone_by_counterparty=phone_by_counterparty,
             settings=settings,
             summary=summary,
+            open_debt_documents=open_debt_documents_by_counterparty.get(counterparty_ref_key, []),
         )
         _sync_bitrix_item(
             item=item,
@@ -1417,7 +1433,7 @@ def sync_receivable_workflow(
             client=bitrix_client,
             summary=summary,
             dry_run_bitrix=dry_run_bitrix,
-            bitrix_documents=open_debt_documents_by_counterparty.get(counterparty_ref_key),
+            bitrix_documents=open_debt_documents_by_counterparty.get(counterparty_ref_key, []),
         )
         if item.bitrix_last_error:
             _append_event(
