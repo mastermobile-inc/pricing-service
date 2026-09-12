@@ -795,6 +795,9 @@ class Settings(BaseSettings):
     order_closure_bitrix_session_secret: str | None = None
     order_closure_bitrix_session_ttl_seconds: int = 3600
     order_closure_apply_enabled: bool = False
+    order_prepay72_enabled: bool = False
+    order_prepay72_apply_enabled: bool = False
+    order_prepay72_site_token: str | None = None
     order_closure_internal_api_token: str | None = None
     procurement_order_formation_label_max_pages: int = Field(default=1000, ge=1, le=10000)
     procurement_product_card_mapping_path: str = (

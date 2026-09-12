@@ -266,6 +266,7 @@ def require_internal_token(
 def commands(
     limit: int = Query(default=1, ge=1, le=10),
     allow_apply: bool = Query(default=False),
+    allow_auto_apply: bool = Query(default=False),
     _token: str = Depends(require_internal_token),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -274,6 +275,11 @@ def commands(
             db,
             limit=limit,
             allow_apply=allow_apply and get_settings().order_closure_apply_enabled,
+            allow_auto_apply=(
+                allow_auto_apply
+                and get_settings().order_prepay72_enabled
+                and get_settings().order_prepay72_apply_enabled
+            ),
         )
         body = service.render_commands_xml(rows)
         db.commit()

@@ -296,6 +296,7 @@ def lease_commands(
     *,
     limit: int = 1,
     allow_apply: bool = True,
+    allow_auto_apply: bool = False,
     now: datetime | None = None,
 ) -> list[OrderClosureBatch]:
     lease_at = _now(now)
@@ -307,8 +308,13 @@ def lease_commands(
             (OrderClosureBatch.status == "leased") & (OrderClosureBatch.lease_until < lease_at),
         ),
     ]
-    if not allow_apply:
-        conditions.append(OrderClosureBatch.command_kind == "diagnose")
+    conditions.append(
+        or_(
+            OrderClosureBatch.command_kind == "diagnose",
+            (OrderClosureBatch.source_type != "auto_prepay72") & bool(allow_apply),
+            (OrderClosureBatch.source_type == "auto_prepay72") & bool(allow_auto_apply),
+        )
+    )
     candidates = session.scalars(
         select(OrderClosureBatch)
         .where(*conditions)
@@ -380,7 +386,16 @@ def render_commands_xml(
             if batch.command_kind == "apply" and item.status != "queued":
                 continue
             node = ElementTree.SubElement(command, "order")
-            for name, value in _command_item_payload(item).items():
+            payload = _command_item_payload(item)
+            if batch.source_type == "auto_prepay72":
+                from app.schemas.order_prepay_expiry import SitePrepaySnapshot
+                from app.services.order_prepay_expiry import command_evidence
+
+                snapshot = SitePrepaySnapshot.model_validate_json(
+                    json.dumps(batch.source_payload["site_snapshot"])
+                )
+                payload.update(command_evidence(snapshot))
+            for name, value in payload.items():
                 ElementTree.SubElement(node, name).text = str(value)
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -483,14 +498,16 @@ def acknowledge_command(
             session.flush()
             existing = {}
         if len(payload.items) > MAX_BATCH_ITEMS or (
-            batch.source_type == "excel" and not payload.items
+            batch.source_type in {"excel", "auto_prepay72"} and not payload.items
         ):
             raise OrderClosureConflict("diagnosis must return the requested rows, up to 200")
         positions = [item.position for item in payload.items]
         if len(set(positions)) != len(positions):
             raise OrderClosureConflict("diagnosis positions must be unique")
         expected_positions = (
-            set(existing) if batch.source_type == "excel" else set(range(1, len(payload.items) + 1))
+            set(existing)
+            if batch.source_type in {"excel", "auto_prepay72"}
+            else set(range(1, len(payload.items) + 1))
         )
         if set(positions) != expected_positions:
             raise OrderClosureConflict("diagnosis must preserve contiguous input positions")
