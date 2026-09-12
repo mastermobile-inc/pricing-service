@@ -304,6 +304,9 @@ export function LogisticsFallbackApp() {
     for (const item of draft?.items || []) (groups[item.dropoff_warehouse_name || "Приёмка на выбранном складе"] ||= []).push(item);
     return groups;
   }, [draft]);
+  useEffect(() => {
+    if (!draft && !drivers.some(d => d.id === Number(driverId))) setDriverId(String(drivers[0]?.id || ""));
+  }, [drivers, draft, driverId]);
 
   useEffect(() => {
     let stopped = false;

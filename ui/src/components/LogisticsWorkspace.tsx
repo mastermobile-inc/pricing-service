@@ -549,6 +549,11 @@ export function LogisticsWorkspace() {
     [bootstrap?.capabilities]
   );
   const warehouseId = selectedWarehouseId ? Number(selectedWarehouseId) : null;
+  useEffect(() => {
+    if (!draft && bootstrap && !bootstrap.drivers.some(d => d.id === Number(driverId))) {
+      setDriverId(String(bootstrap.drivers[0]?.id || ""));
+    }
+  }, [bootstrap, draft, driverId]);
   const listWarehouseId = warehouseId;
   const selectedWarehouse = bootstrap?.warehouses.find(
     (warehouse) => warehouse.id === warehouseId
