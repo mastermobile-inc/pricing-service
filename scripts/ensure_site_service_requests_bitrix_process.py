@@ -93,6 +93,17 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "key": "close_without_response_reason",
+        "title": "Закрыть без ответа: причина",
+        "type": "enumeration",
+        "enum": (
+            ("spam", "Спам или ошибочное обращение"),
+            ("duplicate", "Дубль другого обращения"),
+            ("resolved_elsewhere", "Клиент решил вопрос сам или по телефону"),
+            ("technical", "Техническая или тестовая карточка"),
+        ),
+    },
+    {
         "key": "site_last_sync_at",
         "title": "Последнее обновление с сайта",
         "type": "datetime",
@@ -176,6 +187,7 @@ FORM_SECTIONS = (
             "UF_CRM_36_RETURNTRACKINGCREATEDAT",
             "UF_CRM_36_RETURNSTATUS",
             "UF_CRM_36_DECISIONRESULT",
+            "close_without_response_reason",
             "UF_CRM_36_WORKINGFILESURL",
         ),
     ),

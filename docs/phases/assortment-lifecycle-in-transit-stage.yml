@@ -1,0 +1,57 @@
+version: 1
+record_type: phase
+phase_id: assortment-lifecycle.in-transit-stage
+spec: docs/specs/assortment-lifecycle-policy.md
+objective: "Развести «товар едет» и «товар на складе»: ввести этап «В пути» и перевести вход в «Завезли» на первое поступление."
+risk: medium
+scope:
+  - Новый жизненный этап in_transit / «В пути» между «Заказали» и «Завезли».
+  - Вход в new_item / «Завезли» только по первому зарегистрированному поступлению.
+  - Зачёт поступления без отметки cargo (местная закупка, довоз, перевыставленный заказ).
+  - Отображение этапа в витрине «Формирование заказа» и снятие подписи «→ null» у строк-снимков.
+  - Прогон «было/стало» против формулы активного релиза без записи во внешние системы.
+non_goals:
+  - Запись в 1С, публикации в Bitrix24 и Telegram, изменение автозаказа.
+  - Переключение боевого релиза и перевод уже классифицированных карточек.
+  - Пересмотр спросовых переходов, порогов и гистерезиса.
+  - Расширение расчёта за пределы папки «дисплеи».
+dependencies: []
+allowed_paths:
+  - app/services/assortment_lifecycle.py
+  - app/services/procurement_order_formation.py
+  - app/services/procurement_order_formation_workspace.py
+  - docs/specs/assortment-lifecycle-policy.md
+  - tests/test_assortment_lifecycle.py
+  - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+  - ui/src/components/ProcurementOrderFormationWorkspace.test.tsx
+  - docs/phases/assortment-lifecycle-in-transit-stage.yml
+  - docs/evidence/assortment-lifecycle-in-transit-stage.yml
+  - docs/evidence/assortment-lifecycle-in-transit-before-after.py
+  - docs/evidence/assortment-lifecycle-in-transit-before-after.json
+  - docs/evidence/assortment-lifecycle-in-transit-summary.json
+approval:
+  status: approved
+  approved_by: user
+  approved_at: "2026-09-11T10:05:00+03:00"
+  source: docs/specs/assortment-lifecycle-policy.md#01-смысл-ранних-стадий
+verification:
+  - id: lifecycle-formula-tests
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle.py -q
+    expected_result: Тесты формулы проходят, включая страж на фактах карточки РБ000076661.
+  - id: procurement-backend-tests
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle.py tests/test_assortment_lifecycle_facts.py tests/test_procurement_order_formation.py tests/test_procurement_order_formation_workspace.py tests/test_procurement_order_formation_api.py -q
+    expected_result: Тесты фактов, витрины и API формирования заказа проходят с новым этапом.
+  - id: workspace-ui-tests
+    command: cd ui && npx vitest run src/components/ProcurementOrderFormationWorkspace.test.tsx
+    expected_result: Экран витрины проходит тесты, строка-снимок показывает статус без стрелки и без null.
+  - id: style-checks
+    command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle.py app/services/procurement_order_formation.py app/services/procurement_order_formation_workspace.py tests/test_assortment_lifecycle.py docs/evidence/assortment-lifecycle-in-transit-before-after.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle.py app/services/procurement_order_formation.py app/services/procurement_order_formation_workspace.py tests/test_assortment_lifecycle.py docs/evidence/assortment-lifecycle-in-transit-before-after.py
+    expected_result: Ruff и Black завершаются без замечаний по изменённым файлам.
+  - id: openapi-schema
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check
+    expected_result: openapi.yaml совпадает со схемой кода, гейт переключения релиза не блокирует.
+  - id: before-after-dry-run
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python docs/evidence/assortment-lifecycle-in-transit-before-after.py
+    expected_result: "Прогон «было/стало» против формулы активного релиза без записи в базу и внешние системы; расхождения перечислены по корзинам."
+stop_condition: "Остановиться на кандидате релиза. Сборка и переключение боевого релиза, перевод уже классифицированных карточек и публикации в Bitrix24 требуют отдельного разрешения пользователя."
+status: in_progress

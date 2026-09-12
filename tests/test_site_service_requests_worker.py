@@ -5457,3 +5457,123 @@ def test_worker_rejects_missing_deal_and_order_fields_during_clear_readback(
 
     assert results[0].status == "retry"
     assert results[0].error_code == "bitrix_unavailable"
+
+
+def _close_reason_settings() -> Settings:
+    base = _worker_settings()
+    field_map = dict(base.site_service_requests_bitrix_field_map)
+    field_map["close_without_response_reason"] = "UF_CLOSE_REASON"
+    enum_map = dict(base.site_service_requests_bitrix_enum_map)
+    enum_map["close_without_response_reason_spam"] = "SPAM"
+    return _worker_settings(
+        site_service_requests_bitrix_field_map=field_map,
+        site_service_requests_bitrix_enum_map=enum_map,
+    )
+
+
+def _prepare_closed_case(db_session, api: FakeBitrixApi, settings: Settings):
+    cipher = _persist_event(db_session)
+    reader = SiteServiceRequestBitrixReader(api)
+    api.timeman = {1001: "OPENED", 1002: "OPENED"}
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+    )
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None and case.bitrix_item_id is not None
+    case.last_open_stage_id = "DT1134_55:WORK"
+    api.items[int(case.bitrix_item_id)]["stageId"] = "DT1134_55:SUCCESS"
+    db_session.commit()
+    return case, reader
+
+
+def test_close_without_response_reason_keeps_card_closed(db_session) -> None:
+    """Закрытие с указанной причиной принимается и больше не откатывается."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    api.items[item_id]["UF_CLOSE_REASON"] = "SPAM"
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is False
+    assert api.items[item_id]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.closed_without_response_at is not None
+    assert case.close_without_response_reason == "spam"
+    assert case.first_response_at is None
+
+    # следующий тик карточку уже не трогает
+    later = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 5, tzinfo=UTC),
+    )
+    assert later == []
+    assert api.items[item_id]["stageId"] == "DT1134_55:SUCCESS"
+
+
+def test_close_without_reason_is_still_reverted(db_session) -> None:
+    """Пустая причина means обычное закрытие: gate откатывает его как прежде."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is True
+    assert api.items[item_id]["stageId"] == "DT1134_55:WORK"
+    db_session.refresh(case)
+    assert case.closed_without_response_at is None
+
+
+def test_unknown_close_reason_does_not_release_the_gate(db_session) -> None:
+    """Нераспознанная причина не должна тихо открывать путь к закрытию."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    api.items[item_id]["UF_CLOSE_REASON"] = "SOMETHING_ELSE"
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert case.closed_without_response_at is None
+    assert case.close_without_response_reason is None

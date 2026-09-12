@@ -23,6 +23,7 @@ from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     accept_site_service_email_event,
 )
+from app.services.site_service_requests_worker import SiteServiceRequestPermanentError
 
 _ENCRYPTION_KEY = base64.urlsafe_b64encode(b"m" * 32).decode("ascii")
 
@@ -440,3 +441,61 @@ def test_existing_site_card_keeps_original_idempotency_key(db_session) -> None:
     assert api.items[4321]["ufCrm36Problemdescription"] == "Исходное описание сайта"
     assert api.items[4321]["title"] == "Исходный тикет сайта"
     assert db_session.scalar(select(func.count(SiteServiceRequestCase.id))) == 1
+
+
+def test_verification_passes_when_portal_hides_thread_id() -> None:
+    """Bitrix24 Box не отдаёт THREAD_ID через REST.
+
+    Регрессия боевого контура: до исправления каждый ответ поддержки падал в
+    `email_activity_thread_mismatch`, `first_response_at` не выставлялся и
+    close gate бесконечно возвращал карточку из закрытой стадии.
+    """
+
+    api = FakeEmailBitrixApi()
+    del api.activities[99001]["THREAD_ID"]
+
+    result = _verify_email_event(
+        payload=_payload(),
+        api=api,
+        settings=_settings(),
+    )
+
+    assert result.deal_manager_user_id == 7777
+
+
+def test_verification_still_rejects_foreign_thread_when_portal_returns_it() -> None:
+    api = FakeEmailBitrixApi()
+    api.activities[99001]["THREAD_ID"] = "778"
+
+    try:
+        _verify_email_event(
+            payload=_payload(),
+            api=api,
+            settings=_settings(),
+        )
+    except SiteServiceRequestPermanentError as exc:
+        assert exc.code == "email_activity_thread_mismatch"
+    else:  # pragma: no cover - защита от молчаливой потери проверки
+        raise AssertionError("ожидался email_activity_thread_mismatch")
+
+
+def test_foreign_card_is_not_confirmed_without_direct_binding() -> None:
+    """Перебор цепочки больше не подтверждает чужую карточку.
+
+    crm.activity.list игнорирует filter[THREAD_ID], поэтому прежний обход
+    возвращал все письма портала и подтверждал любую карточку, к которой
+    привязано хоть одно письмо.
+    """
+
+    api = FakeEmailBitrixApi()
+    api.activities[99002] = deepcopy(api.activities[99001])
+    api.activities[99002]["ID"] = "99002"
+    api.activities[99002]["BINDINGS"].append({"OWNER_TYPE_ID": "1134", "OWNER_ID": "4321"})
+
+    result = _verify_email_event(
+        payload=_payload(existing_item_id=4321),
+        api=api,
+        settings=_settings(),
+    )
+
+    assert (1134, 4321) not in result.bindings

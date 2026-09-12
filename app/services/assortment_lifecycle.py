@@ -75,6 +75,9 @@ class AssortmentStatus(StrEnum):
     FRUIT = "fruit"
     NEWBORN = "newborn"
     NEWBORN_NEED = "newborn_need"
+    # Решение 2026-09-11: сдача первого заказа в cargo подтверждает отправку, а
+    # не приход. Товар едет — это отдельный этап между «Заказали» и «Завезли».
+    IN_TRANSIT = "in_transit"
     NEW_ITEM = "new_item"
     SALES_START = "sales_start"
     SALE = "sale"
@@ -116,6 +119,7 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.FRUIT: "Рассматриваем",
     AssortmentStatus.NEWBORN: "Заказали",
     AssortmentStatus.NEWBORN_NEED: "Добираем",
+    AssortmentStatus.IN_TRANSIT: "В пути",
     AssortmentStatus.NEW_ITEM: "Завезли",
     AssortmentStatus.SALES_START: "Пошли продажи",
     AssortmentStatus.SALE: "Растим",
@@ -522,6 +526,19 @@ def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDeci
             auto_order_allowed=post_cargo_status is AssortmentStatus.SALE,
         )
 
+    # Решение 2026-09-11: поступление засчитывается и без отметки cargo —
+    # местная закупка, довоз или перевыставленный заказ тоже «Завезли».
+    if receipt_dates:
+        return _decision(
+            item,
+            AssortmentStatus.NEW_ITEM,
+            "first_receipt_registered",
+            reason_text=(
+                "Товар поступил на склад, сдача в cargo не отмечалась. Продаж ещё не было."
+            ),
+            auto_order_allowed=False,
+        )
+
     if item.has_need_signal and item.first_supplier_order_at is not None:
         return _decision(
             item,
@@ -686,10 +703,18 @@ def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str
                 f"{_format_qty(SALE_MIN_SALES_QTY)} шт для «Растим» ещё нет."
             ),
         )
+    # Решение 2026-09-11: «Завезли» означает товар на складе. Пока поступления
+    # нет, карточка стоит в «В пути», даже если заказ уже сдан в cargo.
+    if item.receipt_dates:
+        return (
+            AssortmentStatus.NEW_ITEM,
+            "first_receipt_registered",
+            "Товар поступил на склад, продаж ещё не было.",
+        )
     return (
-        AssortmentStatus.NEW_ITEM,
+        AssortmentStatus.IN_TRANSIT,
         "first_supplier_order_handed_to_cargo",
-        "Первый заказ поставщику сдан в cargo, продаж ещё не было.",
+        "Первый заказ поставщику сдан в cargo, товар едет — поступления ещё не было.",
     )
 
 
@@ -1319,7 +1344,10 @@ def _post_cargo_status(
         if _sales_start_expired(first_sale_at, as_of):
             return AssortmentStatus.SALE
         return AssortmentStatus.SALES_START
-    return AssortmentStatus.NEW_ITEM
+    # Решение 2026-09-11: вход в «Завезли» — первое поступление на склад.
+    if receipt_dates:
+        return AssortmentStatus.NEW_ITEM
+    return AssortmentStatus.IN_TRANSIT
 
 
 def _sales_start_expired(first_sale_at: date, as_of: date | None) -> bool:
@@ -1352,9 +1380,14 @@ def _post_cargo_reason(
             "first_sale_registered",
             "Есть первая продажа покупателю, запускаем СП / Старт продаж.",
         )
+    if receipt_dates:
+        return (
+            "first_receipt_registered",
+            "Товар поступил на склад, продаж ещё не было.",
+        )
     return (
         "first_supplier_order_handed_to_cargo",
-        "Первый заказ поставщику сдан в cargo, товар стал Новинкой.",
+        "Первый заказ поставщику сдан в cargo, товар едет — поступления ещё не было.",
     )
 
 
