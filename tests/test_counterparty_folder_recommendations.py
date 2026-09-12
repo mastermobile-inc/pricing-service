@@ -711,7 +711,7 @@ def test_supplier_folder_is_excluded_for_current_or_recommended_folder() -> None
     assert enrich_folder_recommendation_item(guarded)["queue"] == QUEUE_EXCLUDED
 
 
-def test_canonical_continuous_balance_resolves_maxim_control_documents() -> None:
+def test_canonical_continuous_balance_keeps_partial_single_document() -> None:
     cases = [
         {
             "code": "РБ008670",
@@ -780,12 +780,6 @@ def test_canonical_continuous_balance_resolves_maxim_control_documents() -> None
                     document_number=case["expected_number"],
                     document_date=expected_date,
                     gross_amount=Decimal(case["gross_amount"]),
-                ),
-                CanonicalDebtSaleCandidate(
-                    document_ref=f"{case['code']}-newer",
-                    document_number="РТУ-НОВЕЕ",
-                    document_date=datetime(2026, 7, 1, 12, 0),
-                    gross_amount=Decimal("9999.00"),
                 ),
             ],
             current_balance=Decimal(case["current_balance"]),

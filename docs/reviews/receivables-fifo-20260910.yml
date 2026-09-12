@@ -1,0 +1,39 @@
+version: 1
+record_type: review
+review_id: receivables-fifo-20260910-local-review
+phase_id: receivables-fifo-20260910
+spec: docs/specs/counterparty-folder-recommendations.md
+risk: high
+reviewed_at: "2026-09-10T09:43:30+03:00"
+executor:
+  identity: codex-fifo-implementation-20260910
+  context_id: 01a081de-25b2-7090-87e4-1e98b5d78ce5
+reviewer:
+  identity: codex-fifo-phase-review-20260910
+  context_id: 01a08a06-3911-7bf3-b134-4152a1c44291
+  fresh_context: true
+evidence_ids:
+  - receivables-fifo-20260910-local
+criteria:
+  - id: plan-and-evidence
+    verdict: passed
+    observed_basis: Проверены все 6 команд плана, evidence, контрольные суммы логов и status completed локальной фазы.
+  - id: verified-code
+    verdict: passed
+    observed_basis: SHA-256 всех 10 Python-файлов совпадают с results; выполнен независимый разбор diff FIFO, кеша и возраста.
+  - id: regression
+    verdict: passed
+    observed_basis: Оба XML проверены по сводке и testcase; 172 passed адресно, 4002 passed и 37 skipped полностью, failures/errors отсутствуют.
+  - id: fifo-and-state-safety
+    verdict: passed
+    observed_basis: Проверены последовательное закрытие старых документов, единый положительный список для таблицы и возраста, сохранность статусов и защита старого кеша при верхнем регистре ссылок.
+  - id: read-only-shadow
+    verdict: passed
+    observed_basis: По первичному приватному stdout повторно пересчитаны остатки; computed_balance и current_balance совпадают, возраст соответствует старейшей открытой дате. Клиентские значения исключены из публикуемой копии; исходный локальный review сохранен.
+verdict: passed
+proof_gaps: []
+blockers: []
+out_of_scope:
+  - Git-публикация и production deployment.
+  - Пересчет рабочего кеша, запись и readback Bitrix.
+  - Авторизованный пользовательский UI; PASS установки не выдавался.

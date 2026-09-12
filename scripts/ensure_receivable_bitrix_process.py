@@ -146,7 +146,7 @@ CUSTOM_FIELD_SPECS = [
     },
     {
         "logical_key": "age_days",
-        "title": "Дней от реализации",
+        "title": "Дней с самого старого неоплаченного документа",
         "type": "integer",
         "searchable": False,
         "edit_in_list": True,
