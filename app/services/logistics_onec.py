@@ -419,6 +419,18 @@ def sync_ready_rtu_units(
     for skipped in normalized.skipped:
         _record_skip(session, report, skipped, dry_run=dry_run)
 
+    if not dry_run:
+        for skipped in normalized.pending_readiness:
+            unit = session.scalar(
+                select(LogisticsTransfer).where(
+                    LogisticsTransfer.source_document_type == logistics.SOURCE_RTU,
+                    LogisticsTransfer.external_id == skipped.source_external_id,
+                )
+            )
+            if unit is not None and (unit.payload or {}).get("ready_for_handoff") is not False:
+                unit.payload = {**(unit.payload or {}), "ready_for_handoff": False}
+                report.synced_updated += 1
+
     lookup_counts = Counter(
         make_rtu_lookup_code(row.rtu_external_id, row.site_order_number)
         for row in normalized.ready
@@ -585,7 +597,7 @@ def sync_ready_rtu_units(
     if unit_payloads:
         result = logistics.sync_units(session, unit_payloads)
         report.synced_created = int(result.get("created") or 0)
-        report.synced_updated = int(result.get("updated") or 0)
+        report.synced_updated += int(result.get("updated") or 0)
         external_carrier_success_ids = _apply_external_carrier_handoffs(
             session,
             report,
@@ -830,6 +842,7 @@ def _rtu_unit_payload(
 ) -> dict[str, Any]:
     payload = {
         "source": "1c_rtu_sync",
+        "ready_for_handoff": True,
         "onec_order_number": row.onec_order_number,
         "source_warehouse_code": row.source_warehouse_code,
         "source_warehouse_name": row.source_warehouse_name,

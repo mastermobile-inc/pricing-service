@@ -30,6 +30,9 @@ export async function withLogisticsAuthRetry<T>(
 }
 
 export const logisticsApi = {
+  patch<T>(path: string, data?: unknown, config?: AxiosRequestConfig) {
+    return withLogisticsAuthRetry(() => api.patch<T>(path, data, config));
+  },
   get<T>(path: string, config?: AxiosRequestConfig) {
     return withLogisticsAuthRetry(() => api.get<T>(path, config));
   },

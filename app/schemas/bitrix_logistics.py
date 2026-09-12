@@ -28,6 +28,7 @@ class BitrixLogisticsSessionResponse(BaseModel):
 
 
 class BitrixLogisticsBootstrapResponse(BaseModel):
+    drivers_freshness: dict = Field(default_factory=dict)
     profile: LogisticsUserProfile
     warehouses: list[LogisticsWarehouseResponse]
     drivers: list[LogisticsDriverResponse]

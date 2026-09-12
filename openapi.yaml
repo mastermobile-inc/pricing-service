@@ -2858,6 +2858,106 @@ paths:
                 $ref: '#/components/schemas/BitrixLogisticsBootstrapResponse'
       security:
       - HTTPBearer: []
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/driver:
+    patch:
+      summary: Change Handoff Driver
+      operationId: change_handoff_driver_api_bitrix_logistics_handoffs_draft__draft_id__driver_patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDriverChangeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/pending-documents:
+    get:
+      summary: Pending Documents
+      operationId: pending_documents_api_bitrix_logistics_pending_documents_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: operation
+        in: query
+        required: true
+        schema:
+          enum:
+          - handoff
+          - receipt
+          type: string
+          title: Operation
+      - name: warehouse_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Warehouse Id
+      - name: draft_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Draft Id
+      - name: driver_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsPendingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/customer-returns:
     post:
       summary: Register Bitrix Customer Return
@@ -9508,7 +9608,119 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LogisticsUserProfile'
+                $ref: '#/components/schemas/LogisticsWebProfile'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/pending-documents:
+    get:
+      summary: Web Pending Documents
+      operationId: web_pending_documents_api_logistics_web_pending_documents_get
+      parameters:
+      - name: operation
+        in: query
+        required: true
+        schema:
+          enum:
+          - handoff
+          - receipt
+          type: string
+          title: Operation
+      - name: warehouse_id
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Warehouse Id
+      - name: draft_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Draft Id
+      - name: driver_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsPendingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/driver:
+    patch:
+      summary: Web Change Driver
+      operationId: web_change_driver_api_logistics_web_handoffs_draft__draft_id__driver_patch
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDriverChangeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
         '422':
           description: Validation Error
           content:
@@ -14189,6 +14401,10 @@ components:
       title: BitrixExecutiveDashboardUser
     BitrixLogisticsBootstrapResponse:
       properties:
+        drivers_freshness:
+          additionalProperties: true
+          type: object
+          title: Drivers Freshness
         profile:
           $ref: '#/components/schemas/LogisticsUserProfile'
         warehouses:
@@ -24720,6 +24936,14 @@ components:
       title: LogisticsDraftItemResponse
     LogisticsDraftResponse:
       properties:
+        scan_result:
+          anyOf:
+          - type: string
+            enum:
+            - added
+            - already_scanned
+          - type: 'null'
+          title: Scan Result
         id:
           type: integer
           title: Id
@@ -24806,8 +25030,39 @@ components:
       required:
       - actor_user_id
       title: LogisticsDraftScanRequest
+    LogisticsDriverChangeRequest:
+      properties:
+        driver_id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Driver Id
+      type: object
+      required:
+      - driver_id
+      title: LogisticsDriverChangeRequest
     LogisticsDriverResponse:
       properties:
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
+        shift_status:
+          type: string
+          title: Shift Status
+          default: unknown
+        shift_checked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Shift Checked At
+        synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Synced At
         id:
           type: integer
           title: Id
@@ -25285,6 +25540,89 @@ components:
       - last_event_type
       - last_event_at
       title: LogisticsMonitorResponse
+    LogisticsPendingItem:
+      properties:
+        transfer_id:
+          type: integer
+          title: Transfer Id
+        document_number:
+          type: string
+          title: Document Number
+        source_document_type:
+          type: string
+          title: Source Document Type
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        dropoff_warehouse_name:
+          type: string
+          title: Dropoff Warehouse Name
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        driver_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Driver Name
+        in_draft:
+          type: boolean
+          title: In Draft
+      type: object
+      required:
+      - transfer_id
+      - document_number
+      - source_document_type
+      - dropoff_warehouse_name
+      - in_draft
+      title: LogisticsPendingItem
+    LogisticsPendingResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/LogisticsPendingItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        scanned_count:
+          type: integer
+          title: Scanned Count
+        remaining_count:
+          type: integer
+          title: Remaining Count
+        offset:
+          type: integer
+          title: Offset
+        limit:
+          type: integer
+          title: Limit
+        freshness:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          type: object
+          title: Freshness
+        drivers:
+          items:
+            $ref: '#/components/schemas/LogisticsDriverResponse'
+          type: array
+          title: Drivers
+      type: object
+      required:
+      - items
+      - total
+      - scanned_count
+      - remaining_count
+      - offset
+      - limit
+      - freshness
+      title: LogisticsPendingResponse
     LogisticsPhotoInput:
       properties:
         telegram_file_id:
@@ -26098,6 +26436,61 @@ components:
           title: Lookup Code
       type: object
       title: LogisticsWebDraftScanRequest
+    LogisticsWebProfile:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Id
+        telegram_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Telegram User Id
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
+        username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Username
+        full_name:
+          type: string
+          title: Full Name
+        role:
+          type: string
+          title: Role
+        default_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Default Warehouse Id
+        default_warehouse_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Warehouse Name
+        pending_documents_enabled:
+          type: boolean
+          title: Pending Documents Enabled
+          default: false
+        drivers_freshness:
+          additionalProperties: true
+          type: object
+          title: Drivers Freshness
+      type: object
+      required:
+      - id
+      - full_name
+      - role
+      title: LogisticsWebProfile
     LogisticsWebSessionRequest:
       properties:
         actor_user_id:

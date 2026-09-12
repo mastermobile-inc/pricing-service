@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-09-10"
+updated_at: "2026-09-12"
 ---
 
 # Инвентарь заданий по расписанию
@@ -26,6 +26,17 @@ updated_at: "2026-09-10"
 расхождение».
 
 ## Активные задания
+
+Новый job выпуска №225: шаблон `infra/cron/logistics_driver_sync.cron`
+устанавливается после production dry-run. Он раз в минуту запускает
+`tasks.sync_logistics_drivers_from_bitrix --apply` из текущего immutable release,
+с `flock`, timeout 50 секунд и флагом `LOGISTICS_DRIVER_BITRIX_SYNC_ENABLED`.
+По умолчанию ручной CLI — dry-run. Лог `/var/log/pricing/logistics_driver_sync.log`
+входит в общую ротацию `mm-pricing` (14 дней, maxsize 50M).
+Успех проверяется по DB marker `logistics_sync_status.source=drivers`;
+старше 180 секунд — предупреждение в приложении. При сбое сохраняется последний
+подтверждённый список. Остановка job не включает legacy-водителей обратно.
+Факт установки и три последовательных запуска фиксируются при выкладке №225.
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|

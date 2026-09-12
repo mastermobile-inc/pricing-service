@@ -563,9 +563,9 @@ documents:
     status: draft
     owner: operations
     source_of_truth: true
-    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
-    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
-    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
+    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, app/services/logistics_drivers.py, app/services/logistics_pending.py, tasks/sync_logistics_drivers_from_bitrix.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py, tests/test_logistics_drivers_pending.py, tests/test_logistics_driver_job.py]
+    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback, drivers, pending-documents, task-225]
   - path: docs/specs/customer-return-carrier-control.md
     title: Customer Return Carrier Control
     doc_type: spec

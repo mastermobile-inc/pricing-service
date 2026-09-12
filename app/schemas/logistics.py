@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -133,6 +134,7 @@ class LogisticsDraftItemResponse(BaseModel):
 
 
 class LogisticsDraftResponse(BaseModel):
+    scan_result: Literal["added", "already_scanned"] | None = None
     id: int
     draft_type: str
     status: str
@@ -253,11 +255,41 @@ class LogisticsWarehouseResponse(BaseModel):
 
 
 class LogisticsDriverResponse(BaseModel):
+    bitrix_user_id: str | None = None
+    shift_status: str = "unknown"
+    shift_checked_at: datetime | None = None
+    synced_at: datetime | None = None
     id: int
     external_id: str | None = None
     full_name: str
     phone: str | None = None
     is_active: bool
+
+
+class LogisticsDriverChangeRequest(BaseModel):
+    driver_id: int = Field(gt=0)
+
+
+class LogisticsPendingItem(BaseModel):
+    transfer_id: int
+    document_number: str
+    source_document_type: str
+    site_order_number: str | None = None
+    dropoff_warehouse_name: str
+    driver_id: int | None = None
+    driver_name: str | None = None
+    in_draft: bool
+
+
+class LogisticsPendingResponse(BaseModel):
+    items: list[LogisticsPendingItem]
+    total: int
+    scanned_count: int
+    remaining_count: int
+    offset: int
+    limit: int
+    freshness: dict[str, dict]
+    drivers: list[LogisticsDriverResponse] = Field(default_factory=list)
 
 
 class LogisticsRouteRunItemRequest(BaseModel):

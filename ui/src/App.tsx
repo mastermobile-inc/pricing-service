@@ -2,6 +2,7 @@ import "./App.css";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { MatchingLayout } from "./components/MatchingLayout";
+import { LogisticsPendingPanel, type PendingLoader } from "./components/LogisticsPendingPanel";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
@@ -171,6 +172,8 @@ const isReceivablesWorkplaceRoute = () => window.location.pathname.startsWith("/
 const isExecutiveDashboardRoute = () => window.location.pathname.startsWith("/executive-dashboard");
 
 type LogisticsProfile = {
+  pending_documents_enabled?: boolean;
+  drivers_freshness?: { stale: boolean };
   id: number;
   full_name: string;
   role: string;
@@ -187,9 +190,11 @@ type LogisticsWarehouse = {
 type LogisticsDriver = {
   id: number;
   full_name: string;
+  shift_status?: "on_shift" | "off_shift" | "unknown";
 };
 
 type LogisticsDraft = {
+  scan_result?: "added" | "already_scanned" | null;
   id: number;
   draft_type: string;
   status: string;
@@ -269,6 +274,13 @@ function exchangeFallbackLaunchToken() {
   return fallbackExchangePromise;
 }
 
+const loadFallbackPending: PendingLoader = (params, signal) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined) query.set(key, String(value));
+  return logisticsFetch(`/pending-documents?${query}`, { signal });
+};
+const driverShiftLabel = (status?: string) => status === "on_shift" ? "На смене" : status === "off_shift" ? "Не на смене" : "Неизвестно";
+
 export function LogisticsFallbackApp() {
   const [profile, setProfile] = useState<LogisticsProfile | null>(null);
   const [warehouses, setWarehouses] = useState<LogisticsWarehouse[]>([]);
@@ -281,10 +293,32 @@ export function LogisticsFallbackApp() {
   const [draft, setDraft] = useState<LogisticsDraft | null>(null);
   const [monitor, setMonitor] = useState<LogisticsMonitorItem[]>([]);
   const [message, setMessage] = useState("Загрузка...");
+  const [messageError, setMessageError] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const operationInFlight = useRef(false);
+
+  const groupedFallbackDraft = useMemo(() => {
+    const groups: Record<string, LogisticsDraft["items"]> = {};
+    for (const item of draft?.items || []) (groups[item.dropoff_warehouse_name || "Приёмка на выбранном складе"] ||= []).push(item);
+    return groups;
+  }, [draft]);
+  useEffect(() => {
+    if (!draft && !drivers.some(d => d.id === Number(driverId))) setDriverId(String(drivers[0]?.id || ""));
+  }, [drivers, draft, driverId]);
+
+  useEffect(() => {
+    let stopped = false;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void Promise.all([logisticsFetch<LogisticsDriver[]>("/drivers"), logisticsFetch<LogisticsProfile>("/profile")])
+        .then(([nextDrivers, nextProfile]) => { if (!stopped) { setDrivers(nextDrivers); setProfile(nextProfile); } })
+        .catch(() => { if (!stopped) { setDrivers(current => current.map(d => ({ ...d, shift_status: "unknown" })));
+          setProfile(current => current ? { ...current, drivers_freshness: { stale: true } } : current); } });
+    }, 60000);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, []);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -363,10 +397,13 @@ export function LogisticsFallbackApp() {
     if (operationInFlight.current) return;
     operationInFlight.current = true;
     setBusy(true);
+    setMessageError(false);
     try {
       await action();
     } catch (error: unknown) {
+      setMessageError(true);
       setMessage(error instanceof Error ? error.message : fallbackMessage);
+      void logisticsFetch<LogisticsDriver[]>("/drivers").then(setDrivers).catch(() => undefined);
     } finally {
       operationInFlight.current = false;
       setBusy(false);
@@ -408,7 +445,7 @@ export function LogisticsFallbackApp() {
       });
       setDraft(data);
       setScanCode("");
-      setMessage("Скан принят");
+      setMessage(data.scan_result === "already_scanned" ? "Документ уже добавлен" : "Документ добавлен");
     }, "Ошибка скана");
   };
 
@@ -424,6 +461,18 @@ export function LogisticsFallbackApp() {
       setMessage(`Подтверждено: ${data.processed_count}`);
       await refreshMonitor();
     }, "Ошибка подтверждения");
+  };
+
+  const changeDriver = (nextId: string) => {
+    if (!draft) { setDriverId(nextId); return; }
+    void runOperation(async () => {
+      const data = await logisticsFetch<LogisticsDraft>(`/handoffs/draft/${draft.id}/driver`, {
+        method: "PATCH", body: JSON.stringify({ driver_id: Number(nextId) }),
+      });
+      setDraft(data);
+      setDriverId(nextId);
+      setMessage("Водитель заменён. Отсканированные документы сохранены");
+    }, "Не удалось заменить водителя");
   };
 
   const removeDraftItem = (itemId: number) => {
@@ -514,15 +563,19 @@ export function LogisticsFallbackApp() {
                 <select
                   className="app__select"
                   aria-label="Водитель"
-                  value={driverId}
-                  onChange={(e) => setDriverId(e.target.value)}
+                  value={draft?.driver_id || driverId}
+                  disabled={busy}
+                  onChange={(e) => changeDriver(e.target.value)}
                 >
+                  {draft?.driver_id && !drivers.some(d => d.id === draft.driver_id) && <option value={draft.driver_id}>Выбранный водитель недоступен — замените</option>}
                   {drivers.map((driver) => (
                     <option key={driver.id} value={driver.id}>
-                      {driver.full_name}
+                      {driver.full_name} — {driverShiftLabel(driver.shift_status)}
                     </option>
                   ))}
                 </select>
+                {drivers.find(d => d.id === Number(draft?.driver_id || driverId))?.shift_status !== "on_shift" && <p>Рабочий день не подтверждён. Для действующего водителя передача разрешена.</p>}
+                {profile.drivers_freshness?.stale && <p role="status">Список водителей давно не обновлялся. Сведения о смене могут быть неполными.</p>}
                 <div className="logistics-field logistics-field--fixed">
                   <span>Направление</span>
                   <strong>Определится автоматически после сканирования документа</strong>
@@ -571,6 +624,11 @@ export function LogisticsFallbackApp() {
                 >
                   Камера
                 </button>
+                {message && <p className={`logistics__message${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>{message}</p>}
+                {profile.pending_documents_enabled && warehouseId && <LogisticsPendingPanel
+                  key={`${mode}:${warehouseId}:${draft.id}`} operation={mode}
+                  warehouseId={Number(warehouseId)} draftId={draft.id} revision={draft} load={loadFallbackPending}
+                />}
                 <div className="logistics__actions">
                   <button
                     className="btn"
@@ -590,8 +648,10 @@ export function LogisticsFallbackApp() {
                     Отменить черновик
                   </button>
                 </div>
-                <ul>
-                  {draft.items.map((item) => (
+                <p>Добавлено документов: {draft.item_count}</p>
+                {!draft.item_count && <p>Добавьте хотя бы один документ для подтверждения</p>}
+                {Object.entries(groupedFallbackDraft).map(([destination, items]) => <section key={destination}><h3>{destination}</h3><ul>
+                  {items.map((item) => (
                     <li key={item.id}>
                       <span>
                         {item.document_number} · {item.lookup_code || item.barcode} ·{" "}
@@ -606,13 +666,17 @@ export function LogisticsFallbackApp() {
                       </button>
                     </li>
                   ))}
-                </ul>
+                </ul></section>)}
               </div>
             )}
+            {!draft && profile.pending_documents_enabled && warehouseId && <LogisticsPendingPanel
+              key={`${mode}:${warehouseId}:none`} operation={mode}
+              warehouseId={Number(warehouseId)} revision={draft} load={loadFallbackPending}
+            />}
           </section>
         )}
-        {message && (
-          <p className="logistics__message" role="status">
+        {message && !draft && (
+          <p className={`logistics__message${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>
             {message}
           </p>
         )}

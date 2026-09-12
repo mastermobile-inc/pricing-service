@@ -1,0 +1,1 @@
+* * * * * root /bin/bash /opt/MM/pricing-service-task43-current/infra/cron/logistics_driver_sync.sh >> /var/log/pricing/logistics_driver_sync.log 2>&1

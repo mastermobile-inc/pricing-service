@@ -3,6 +3,7 @@ import { isAxiosError } from "axios";
 import { logisticsApi as api } from "../api/logistics";
 import type { BitrixLogisticsProfile } from "../api/bitrix";
 import { CustomerReturnsWorkspace } from "./CustomerReturnsWorkspace";
+import { LogisticsPendingPanel } from "./LogisticsPendingPanel";
 
 type Warehouse = {
   id: number;
@@ -12,9 +13,13 @@ type Warehouse = {
   payload?: Record<string, unknown> | null;
 };
 
-type Driver = { id: number; full_name: string };
+type Driver = { id: number; full_name: string; shift_status?: string };
+const SHIFT_LABELS: Record<string, string> = {
+  on_shift: "На смене", off_shift: "Не на смене", unknown: "Рабочий день неизвестен",
+};
 
 type Draft = {
+  scan_result?: "added" | "already_scanned" | null;
   id: number;
   draft_type: "handoff" | "receipt";
   status: string;
@@ -88,6 +93,7 @@ type ManualReviewPage = {
 };
 
 type Bootstrap = {
+  drivers_freshness?: { stale: boolean };
   profile: BitrixLogisticsProfile;
   warehouses: Warehouse[];
   drivers: Driver[];
@@ -509,18 +515,45 @@ export function LogisticsWorkspace() {
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [historyTitle, setHistoryTitle] = useState("");
   const [message, setMessage] = useState("Загрузка…");
+  const [messageError, setMessageError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState("");
   const reviewRequestId = useRef(0);
   const operationInFlight = useRef(false);
+  useEffect(() => {
+    let stopped = false;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void api.get<Bootstrap>("/bitrix/logistics/bootstrap").then(({ data }) => {
+        if (!stopped) setBootstrap(current => current ? { ...current, drivers: data.drivers, drivers_freshness: data.drivers_freshness } : current);
+      }).catch(() => {
+        if (!stopped) setBootstrap(current => current ? { ...current, drivers_freshness: { stale: true },
+          drivers: current.drivers.map(d => ({ ...d, shift_status: "unknown" })) } : current);
+      });
+    }, 60000);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, []);
+  const groupedDraft = useMemo(() => {
+    const groups: Record<string, Draft["items"]> = {};
+    for (const item of draft?.items || []) {
+      const key = item.dropoff_warehouse_name || "Приёмка на выбранном складе";
+      (groups[key] ||= []).push(item);
+    }
+    return groups;
+  }, [draft]);
 
   const capabilities = useMemo(
     () => new Set(bootstrap?.capabilities || []),
     [bootstrap?.capabilities]
   );
   const warehouseId = selectedWarehouseId ? Number(selectedWarehouseId) : null;
+  useEffect(() => {
+    if (!draft && bootstrap && !bootstrap.drivers.some(d => d.id === Number(driverId))) {
+      setDriverId(String(bootstrap.drivers[0]?.id || ""));
+    }
+  }, [bootstrap, draft, driverId]);
   const listWarehouseId = warehouseId;
   const selectedWarehouse = bootstrap?.warehouses.find(
     (warehouse) => warehouse.id === warehouseId
@@ -630,10 +663,16 @@ export function LogisticsWorkspace() {
     if (operationInFlight.current) return;
     operationInFlight.current = true;
     setBusy(true);
+    setMessageError(false);
     try {
       await action();
     } catch (error) {
+      setMessageError(true);
       setMessage(apiError(error));
+      // A driver may have become unavailable while the draft was open.
+      void api.get<Bootstrap>("/bitrix/logistics/bootstrap").then(({ data }) => {
+        setBootstrap(current => current ? { ...current, drivers: data.drivers, drivers_freshness: data.drivers_freshness } : current);
+      }).catch(() => {});
     } finally {
       operationInFlight.current = false;
       setBusy(false);
@@ -674,7 +713,8 @@ export function LogisticsWorkspace() {
       );
       setDraft(data);
       setScanCode("");
-      setMessage(`Добавлено: ${data.item_count}`);
+      setMessage(data.scan_result === "already_scanned"
+        ? "Документ уже добавлен" : `Добавлено: ${data.item_count}`);
     });
 
   const confirm = () =>
@@ -701,6 +741,14 @@ export function LogisticsWorkspace() {
       setDraft(data);
       setMessage("Ошибочный скан удалён");
     });
+
+  const changeDriver = (nextId: string) => void run(async () => {
+    if (!draft || !nextId) return;
+    const { data } = await api.patch<Draft>(`/bitrix/logistics/handoffs/draft/${draft.id}/driver`, { driver_id: Number(nextId) });
+    setDraft(data);
+    setDriverId(nextId);
+    setMessage("Водитель заменён. Отсканированные документы сохранены");
+  });
 
   const cancelDraft = () => {
     if (!draft || !window.confirm("Отменить этот черновик и начать заново?")) return;
@@ -889,10 +937,13 @@ export function LogisticsWorkspace() {
                       <span>Водитель</span>
                       <select value={driverId} onChange={(event) => setDriverId(event.target.value)}>
                         {bootstrap.drivers.map((driver) => (
-                          <option key={driver.id} value={driver.id}>{driver.full_name}</option>
+                          <option key={driver.id} value={driver.id}>{driver.full_name} — {SHIFT_LABELS[driver.shift_status || "unknown"]}</option>
                         ))}
                       </select>
                       {!bootstrap.drivers.length && <small>Нет активных водителей</small>}
+                      {bootstrap.drivers_freshness?.stale && <small>Справочник давно не обновлялся. Показаны последние подтверждённые данные.</small>}
+                      {bootstrap.drivers.find(d => String(d.id) === driverId)?.shift_status !== "on_shift" &&
+                        <small>Рабочий день не подтверждён. Передача разрешена.</small>}
                     </label>
                     <div className="logistics-field logistics-field--fixed">
                       <span>Направление</span>
@@ -924,6 +975,16 @@ export function LogisticsWorkspace() {
               </div>
             ) : (
               <div className="logistics-draft-mobile">
+                {draft.draft_type === "handoff" && <label className="logistics-field">
+                  <span>Водитель черновика</span>
+                  <select aria-label="Водитель черновика" disabled={busy} value={draft.driver_id || ""} onChange={e => changeDriver(e.target.value)}>
+                    {!bootstrap.drivers.some(d => d.id === draft.driver_id) &&
+                      <option value={draft.driver_id || ""}>Выбранный водитель недоступен — замените</option>}
+                    {bootstrap.drivers.map(d => <option key={d.id} value={d.id}>{d.full_name} — {SHIFT_LABELS[d.shift_status || "unknown"]}</option>)}
+                  </select>
+                  {bootstrap.drivers.find(d => d.id === draft.driver_id)?.shift_status !== "on_shift" &&
+                    <small>Рабочий день не подтверждён. Для действующего водителя передача разрешена.</small>}
+                </label>}
                 <div className="logistics-draft-mobile__summary">
                   <div><span className="logistics-step">2</span><strong>Черновик №{draft.id}</strong></div>
                   <b>{draft.item_count}</b>
@@ -949,7 +1010,10 @@ export function LogisticsWorkspace() {
                   Добавить код
                 </button>
                 <div className="logistics-items">
-                  {draft.items.map((item, index) => (
+                  {message && <p className={`logistics__message${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>{message}</p>}
+                  {Object.entries(groupedDraft).map(([destination, items]) => <section key={destination}>
+                    <h3>{destination}</h3>
+                  {items.map((item, index) => (
                     <article key={item.id}>
                       <span>{index + 1}</span>
                       <div>
@@ -971,7 +1035,13 @@ export function LogisticsWorkspace() {
                       </button>
                     </article>
                   ))}
+                  </section>)}
                 </div>
+                {!draft.item_count && <p>Добавьте хотя бы один документ для подтверждения</p>}
+                {capabilities.has("pending_documents") && warehouseId && <LogisticsPendingPanel
+                  key={`${operation}:${warehouseId}:${draft.id}`} operation={operation}
+                  warehouseId={warehouseId} draftId={draft.id} revision={draft}
+                />}
                 <button className="btn logistics-primary" type="button" disabled={!draft.item_count || busy} onClick={confirm}>
                   Подтвердить {draft.item_count ? `(${draft.item_count})` : ""}
                 </button>
@@ -980,6 +1050,10 @@ export function LogisticsWorkspace() {
                 </button>
               </div>
             )}
+            {!draft && capabilities.has("pending_documents") && warehouseId && <LogisticsPendingPanel
+              key={`${operation}:${warehouseId}:none`}
+              operation={operation} warehouseId={warehouseId} revision={draft}
+            />}
           </section>
         )}
 
@@ -1125,7 +1199,7 @@ export function LogisticsWorkspace() {
           />
         )}
 
-        {message && <div className="logistics-toast" role="status">{message}</div>}
+        {message && !(screen === "operation" && draft) && <div className={`logistics-toast${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>{message}</div>}
         {(capabilities.has("handoff") || capabilities.has("receipt") || capabilities.has("monitor")) && (
           <button className="logistics-fallback-link" type="button" disabled={busy} onClick={openFallback}>
             {capabilities.has("handoff") || capabilities.has("receipt")

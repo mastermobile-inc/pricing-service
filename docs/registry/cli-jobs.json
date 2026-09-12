@@ -44,6 +44,16 @@
     }
   ],
   "commands": {
+    "sync_logistics_drivers_from_bitrix.py": {
+      "owner": "logistics",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "upsert_by_bitrix_user_id_full_snapshot",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/logistics-control-contour.md",
+      "remove_after": null
+    },
     "analyze_manual_matching_feedback.py": {
       "owner": "matching",
       "kind": "report",
