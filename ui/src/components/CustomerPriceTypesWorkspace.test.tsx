@@ -181,6 +181,59 @@ describe("CustomerPriceTypesWorkspace", () => {
     expect(submit).toBeEnabled();
   });
 
+  it("на главном экране находит клиента вне рабочих очередей", async () => {
+    renderWorkspace();
+
+    const search = await screen.findByRole("searchbox", {
+      name: "Поиск клиента по всему портфелю",
+    });
+    fireEvent.change(search, { target: { value: "РБ000002" } });
+
+    expect(
+      await screen.findByText(
+        "В ваших рабочих очередях совпадений нет. Клиент найден в портфеле — смотрите ниже.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Найдены в портфеле, вне ваших рабочих очередей: 1"),
+    ).toBeVisible();
+    expect(screen.getByText("РБ000002 · Проблемный клиент")).toBeVisible();
+    expect(screen.getByText("Данные проверяет техническая команда")).toBeVisible();
+    expect(
+      screen.getByText(/Тип цены не меняется, пока данные не исправлены/),
+    ).toBeVisible();
+  });
+
+  it("не выдаёт клиента за отсутствующего, когда его нет и в портфеле", async () => {
+    vi.mocked(customerPriceTypes.searchCptProfiles).mockResolvedValue({
+      ...envelope,
+      total: 0,
+      limit: 50,
+      offset: 0,
+      payload: [],
+    });
+    renderWorkspace();
+
+    fireEvent.change(
+      await screen.findByRole("searchbox", { name: "Поиск клиента по всему портфелю" }),
+      { target: { value: "РБ999999" } },
+    );
+
+    expect(
+      await screen.findByText(
+        "Клиент не найден ни в очередях, ни в портфеле. Проверьте код 1С или попробуйте часть имени.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("помечает верхние счётчики как несопоставимые с фильтрами", async () => {
+    renderWorkspace();
+
+    expect(
+      await screen.findByText(/Это справочные счётчики, они не нажимаются/),
+    ).toBeVisible();
+  });
+
   it("показывает русскую ошибку глобального поиска", async () => {
     vi.mocked(customerPriceTypes.searchCptProfiles).mockRejectedValueOnce(new Error("failed"));
     renderWorkspace();
