@@ -61,6 +61,7 @@ from app.services.receivable_workflow import (
 from app.services.receivable_workplace_cache import (
     latest_receivable_snapshot_date,
     load_cached_open_debt_documents,
+    ordered_open_debt_documents,
     receivable_department_options,
     workplace_cache_status,
 )
@@ -324,22 +325,7 @@ def _build_documents(
     needs_default_credit_depth: bool,
     open_debt_documents: list[dict[str, Any]] | None = None,
 ) -> list[ReceivableWorkplaceDocument]:
-    source_documents = case.chain_documents if open_debt_documents is None else open_debt_documents
-    raw_documents = list(source_documents or [])
-    raw_documents = _sort_open_debt_documents(raw_documents)
-    if (
-        open_debt_documents is None
-        and not raw_documents
-        and (case.origin_document_ref or case.origin_document_number)
-    ):
-        raw_documents.append(
-            {
-                "document_ref": case.origin_document_ref,
-                "document_number": case.origin_document_number,
-                "document_date": case.origin_document_date,
-                "open_amount": case.current_balance,
-            }
-        )
+    raw_documents = ordered_open_debt_documents(open_debt_documents)
 
     documents: list[ReceivableWorkplaceDocument] = []
     for raw in raw_documents:
@@ -1223,6 +1209,7 @@ def build_receivable_workplace(
             suppress_unverified_overdue=(
                 _ref_key(case.counterparty_ref)
                 in open_debt_cache.document_mismatch_counterparty_refs
+                or _ref_key(case.counterparty_ref) in open_debt_cache.outdated_counterparty_refs
             ),
             supervisor_notes=(
                 supervisor_notes_by_work_item.get(work_items[case.counterparty_ref].id, [])
@@ -1300,6 +1287,16 @@ def _refresh_work_item_from_case(
     case: ReceivableCase,
     as_of: date,
 ) -> None:
+    open_debt_cache = load_cached_open_debt_documents(
+        session,
+        snapshot_date=as_of,
+        counterparty_refs=[case.counterparty_ref],
+    )
+    if _ref_key(case.counterparty_ref) in open_debt_cache.outdated_counterparty_refs:
+        return
+    open_debt_documents = open_debt_cache.documents_by_counterparty.get(
+        _ref_key(case.counterparty_ref), []
+    )
     debt_key = debt_key_for_case(case)
     reset_receivable_debt_cycle(
         session,
@@ -1321,7 +1318,7 @@ def _refresh_work_item_from_case(
     item.origin_document_date = case.origin_document_date
     item.due_date = _effective_due_date(case)[0]
     item.overdue_days = _effective_overdue_days(case, as_of=as_of)[0]
-    item.age_days = debt_age_days(case, as_of=as_of)
+    item.age_days = debt_age_days(open_debt_documents, as_of=as_of)
     item.origin_manager_ref = case.origin_manager_ref
     item.origin_manager_name = case.origin_manager_name
     item.current_manager_ref = case.current_manager_ref
@@ -1329,7 +1326,7 @@ def _refresh_work_item_from_case(
     item.department_ref = case.department_ref
     item.department_name = case.department_name
     item.needs_call_today = needs_call_on_date(case, as_of=as_of)
-    item.chain_documents = case.chain_documents or []
+    item.chain_documents = open_debt_documents
     item.payload = {
         "snapshot_date": case.snapshot_date.isoformat(),
         "segment": case.segment,

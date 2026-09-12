@@ -28,6 +28,7 @@ from app.services.receivable_workflow import (
     STATUS_NEW_DEBT,
     STATUS_NO_PHONE,
     STATUS_PAID,
+    debt_age_days,
     debt_key_for_case,
     format_chain_documents_for_bitrix,
     stable_key_for_counterparty,
@@ -158,6 +159,32 @@ def _case(
             },
         ],
     )
+
+
+def test_age_days_uses_oldest_open_document_not_latest_sale() -> None:
+    documents = [
+        {"document_number": "NEWER", "document_date": "2026-09-01T12:00:00", "open_amount": "100"},
+        {"document_number": "OLDER", "document_date": "2026-08-17T11:06:32", "open_amount": "1"},
+        {"document_number": "CLOSED", "document_date": "2026-01-01T10:00:00", "open_amount": "0"},
+    ]
+
+    assert debt_age_days(documents, as_of=date(2026, 9, 9)) == 23
+    assert debt_age_days(documents, as_of=date(2026, 9, 10)) == 24
+    documents[1]["open_amount"] = "0"
+    assert debt_age_days(documents, as_of=date(2026, 9, 10)) == 9
+
+
+def test_age_days_without_open_document_date_is_unknown() -> None:
+    assert debt_age_days(None, as_of=date(2026, 9, 9)) is None
+    assert debt_age_days([], as_of=date(2026, 9, 9)) is None
+    assert debt_age_days([{"open_amount": "100"}], as_of=date(2026, 9, 9)) is None
+
+
+def test_age_days_never_reports_negative_age() -> None:
+    documents = [{"document_date": "2026-09-10T12:00:00", "open_amount": "100"}]
+
+    assert debt_age_days(documents, as_of=date(2026, 9, 9)) == 0
+    assert debt_age_days(documents, as_of=date(2026, 9, 10)) == 0
 
 
 def test_chain_documents_are_formatted_for_bitrix_without_technical_values() -> None:
@@ -385,7 +412,8 @@ def test_overdue_buyer_gets_one_work_item_and_bitrix_item(db_session: Session) -
     assert item.current_balance == Decimal("15000")
     assert item.department_ref == "dep-1"
     assert item.department_name == "Продажи"
-    assert len(item.chain_documents or []) == 2
+    assert item.chain_documents == []
+    assert item.age_days is None
     assert item.bitrix_item_id == 101
     assert summary.work_items_created == 1
     assert summary.bitrix_created == 1
@@ -413,11 +441,11 @@ def test_bitrix_sync_uses_open_debt_cache_for_documents(db_session: Session) -> 
                     {
                         "document_ref": "sale-open",
                         "document_number": "РТУ-1",
-                        "document_date": "2026-03-14T10:00:00",
+                        "document_date": "2026-03-01T10:00:00",
                         "open_amount": "12000.00",
                         "sale_amount": "15000.00",
                         "closing_amount": "-3000.00",
-                        "statement_selection_rule": "statement_bottom_up_balance_cutoff",
+                        "statement_selection_rule": "onec_canonical_fifo_settlements_v1",
                     }
                 ],
             ),
@@ -428,6 +456,7 @@ def test_bitrix_sync_uses_open_debt_cache_for_documents(db_session: Session) -> 
         receivable_bitrix_field_map={
             **_settings().receivable_bitrix_field_map,
             "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+            "age_days": "UF_CRM_RECEIVABLE_AGE_DAYS",
         }
     )
 
@@ -441,11 +470,16 @@ def test_bitrix_sync_uses_open_debt_cache_for_documents(db_session: Session) -> 
 
     docs_field = bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"]
     assert "Открытый долг РТУ-1" in docs_field
-    assert "правило: подбор от текущего остатка" in docs_field
+    assert "правило: погашение от старых документов к новым" in docs_field
     assert "Реализация S-001" not in docs_field
+    assert bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_AGE_DAYS"] == 20
+    item = db_session.scalar(select(ReceivableWorkItem))
+    assert item is not None
+    assert item.age_days == 20
+    assert item.chain_documents[0]["document_number"] == "РТУ-1"
 
 
-def test_bitrix_sync_falls_back_to_chain_documents_without_open_debt_cache(
+def test_bitrix_sync_does_not_invent_open_documents_without_cache(
     db_session: Session,
 ) -> None:
     as_of = date(2026, 3, 21)
@@ -472,8 +506,11 @@ def test_bitrix_sync_falls_back_to_chain_documents_without_open_debt_cache(
     )
 
     docs_field = bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"]
-    assert "Документ S-001" in docs_field
-    assert "Открытый долг" not in docs_field
+    assert docs_field == ""
+    item = db_session.scalar(select(ReceivableWorkItem))
+    assert item is not None
+    assert item.age_days is None
+    assert item.chain_documents == []
 
 
 def test_bitrix_sync_does_not_fall_back_when_open_debt_cache_row_is_empty(

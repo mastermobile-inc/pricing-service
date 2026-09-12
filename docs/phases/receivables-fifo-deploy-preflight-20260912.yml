@@ -1,0 +1,35 @@
+version: 1
+record_type: phase
+phase_id: receivables-fifo-deploy-preflight-20260912
+spec: docs/specs/counterparty-folder-recommendations.md
+objective: Проверить актуальный кандидат перед разрешенной установкой и воспроизвести найденный baseline-блокер без изменения runtime.
+risk: high
+scope:
+  - Полный pytest актуального кандидата.
+  - Read-only диагностическое воспроизведение блокера на активных исходниках.
+non_goals:
+  - Git-публикация и production-запись.
+dependencies:
+  - receivables-fifo-20260910
+allowed_paths:
+  - docs/phases/receivables-fifo-deploy-preflight-20260912.yml
+  - docs/evidence/receivables-fifo-deploy-20260912.yml
+  - docs/evidence/receivables-fifo-deploy-20260912-results.json
+  - docs/reviews/receivables-fifo-deploy-20260912.yml
+approval:
+  status: approved
+  approved_by: пользователь текущего диалога
+  approved_at: "2026-09-12T15:02:30+03:00"
+  source: >-
+    Предварительная проверка входит в подтверждение «разрешаю делай» на установку FIFO.
+    Диагностическая подфаза выделена при остановке; исходный план установки сохранен,
+    невыполненные команды не получают вымышленных кодов возврата.
+verification:
+  - id: candidate-tests
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short
+    expected_result: Полный набор завершается с кодом 0.
+  - id: active-baseline
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_build_assortment_lifecycle_updates_task.py::test_build_assortment_lifecycle_updates_task_writes_export_rows -q --tb=short
+    expected_result: Установлена воспроизводимость обнаруженного сбоя на активной базе; повторное падение блокирует выпуск, не считается PASS.
+stop_condition: Красная обязательная проверка запрещает установку; продолжение после исправления отдельного baseline-блокера и нового полного прогона.
+status: blocked

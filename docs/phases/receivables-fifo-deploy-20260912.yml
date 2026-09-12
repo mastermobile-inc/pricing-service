@@ -1,0 +1,64 @@
+version: 1
+record_type: phase
+phase_id: receivables-fifo-deploy-20260912
+spec: docs/specs/counterparty-folder-recommendations.md
+objective: Опубликовать и установить согласованный FIFO-расчет с адресным обновлением документов и возраста в Bitrix.
+risk: high
+scope:
+  - Перенос проверенного исправления на актуальную основную ветку без чужих локальных изменений.
+  - Отдельный коммит, публикация и установка штатным контроллером из чистого worktree.
+  - Пересчет кеша, проверенный план и обновление документов и возраста существующих карточек, затем подписи.
+  - Readback финансовых инвариантов, обоих входов в приложение и поведения таблицы.
+non_goals:
+  - Запись в 1С, SMS, создание и закрытие карточек, изменение ручных статусов и общего долга.
+  - Общий workflow sync, переделка магазина, обход авторизации CRM и независимого review.
+dependencies:
+  - receivables-fifo-20260910
+  - receivables-fifo-deploy-preflight-20260912
+allowed_paths:
+  - tests/test_build_assortment_lifecycle_updates_task.py
+  - docs/specs/assortment-lifecycle-policy.md
+  - app/services/receivable_canonical_debt_origin.py
+  - app/services/receivable_workplace_cache.py
+  - app/services/receivable_workflow.py
+  - app/services/receivable_workplace.py
+  - scripts/ensure_receivable_bitrix_process.py
+  - tests/test_receivable_fifo.py
+  - tests/test_receivable_workflow.py
+  - tests/test_receivable_workplace.py
+  - tests/test_receivable_bitrix_process.py
+  - tests/test_counterparty_folder_recommendations.py
+  - docs/specs/receivables-smart-process-workflow.md
+  - docs/specs/counterparty-folder-recommendations.md
+  - docs/manifest.yml
+  - docs/phases/receivables-fifo-deploy-20260912.yml
+  - docs/evidence/receivables-fifo-deploy-20260912.yml
+  - docs/reviews/receivables-fifo-deploy-20260912.yml
+approval:
+  status: approved
+  approved_by: пользователь текущего диалога
+  approved_at: "2026-09-12T15:02:30+03:00"
+  source: >-
+    «разрешаю делай» после запроса на отдельный коммит, публикацию и установку FIFO.
+    Канон — раздел разрешения от 2026-09-12 в docs/specs/receivables-smart-process-workflow.md.
+    approved_at — время фиксации, не отправки сообщения.
+verification:
+  - id: candidate-tests
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short
+    expected_result: Полный pytest точного кандидата завершается без failures/errors; адресные FIFO-регрессии проходят.
+  - id: static-checks
+    command: Ruff, Black с одним worker, scripts/export_openapi.py --check и workspace validate_project_docs.py для отдельного checkout.
+    expected_result: Все четыре проверки завершаются с кодом 0.
+  - id: release
+    command: /usr/local/sbin/mm-pricing-service-release status; build; check; switch; status
+    expected_result: Чистый опубликованный кандидат содержит активную базу, переключение подтверждено manifest и health.
+  - id: financial-readback
+    command: Приватный preflight/backup и readback существующих карточек, кеша и метаданных поля.
+    expected_result: Документы соответствуют FIFO и возрасту; общий долг и ручные статусы сохранены; SMS и новые карточки отсутствуют.
+  - id: workplace-smoke
+    command: Проверка обоих входов рабочего приложения и раскрытия погашений и возвратов.
+    expected_result: Рабочие серверные данные согласованы; граница личной авторизации CRM явно указана, без подмены E2E.
+stop_condition: Остановить запись при расхождении сумм, смене активной базы, неполном плане или регрессии; завершение только после evidence и независимого review.
+status: in_progress
+resumed_at: "2026-09-12T15:49:19+03:00"
+resume_source: Пользователь подтвердил исправление блокирующих тестов и продолжение установки; дата означает время фиксации разрешения.

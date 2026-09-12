@@ -1,0 +1,41 @@
+version: 1
+record_type: evidence
+evidence_id: receivables-fifo-20260910-local
+phase_id: receivables-fifo-20260910
+spec: docs/specs/counterparty-folder-recommendations.md
+observed_at: "2026-09-10T09:33:24.862986+03:00"
+environment:
+  workspace: /opt/MM/.worktrees/receivables-card-links-20260909
+  runtime: Python 3.12, isolated candidate; production unchanged
+result: passed
+verifications:
+  - id: focused-tests
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_receivable_fifo.py tests/test_receivable_workflow.py tests/test_receivable_bitrix_process.py tests/test_counterparty_folder_recommendations.py tests/test_receivable_workplace.py -q --tb=short --junitxml=/tmp/mm-fifo-focused-20260910.xml
+    exit_code: 0
+    observed_result: "172 passed, 0 skipped, 0 failures, 0 errors"
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
+  - id: ruff
+    command: /opt/MM/pricing-service/.venv/bin/python -m ruff check .
+    exit_code: 0
+    observed_result: "PASS; команда завершилась с кодом 0."
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
+  - id: black
+    command: BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check .
+    exit_code: 0
+    observed_result: "PASS; команда завершилась с кодом 0."
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
+  - id: openapi
+    command: /opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check
+    exit_code: 0
+    observed_result: "PASS; команда завершилась с кодом 0."
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
+  - id: full-tests
+    command: TMPDIR=/dev/shm timeout 600 /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short --basetemp=/dev/shm/mm-fifo-full-pytest-20260910 --junitxml=/tmp/mm-fifo-full-20260910.xml
+    exit_code: 0
+    observed_result: "4002 passed, 37 skipped, 0 failures, 0 errors"
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
+  - id: project-docs
+    command: python scripts/validate_project_docs.py pricing-service
+    exit_code: 0
+    observed_result: "PASS; команда завершилась с кодом 0."
+    artifact: docs/evidence/receivables-fifo-20260910-results.json
