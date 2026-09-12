@@ -1,0 +1,50 @@
+version: 1
+record_type: phase
+phase_id: assortment-lifecycle.order-corrections-rollout
+spec: docs/specs/assortment-lifecycle-policy.md
+objective: "Установить учёт корректировок и принять результат следующего штатного ночного пересчёта."
+risk: medium
+scope:
+  - Включение подготовленной доработки в основную ветку из отдельного clean worktree.
+  - Дополнение regression tests и проверки чтения существующей схемы Ekama.
+  - Сравнение старого и нового расчёта без записи для папки «дисплеи».
+  - Backup общего конфига, добавление семи полей и штатный release-controller cutover.
+  - Проверка сервиса после установки и данных после следующего ночного запуска.
+non_goals:
+  - Изменение конфигурации или данных 1С, отправки в Bitrix24 и Telegram.
+  - Ручной рабочий пересчёт, изменение правил автозаказа и других процессов закупки.
+  - Автоматическое исправление посторонних документов и ошибок других контуров.
+dependencies:
+  - docs/phases/assortment-lifecycle-order-corrections.yml
+allowed_paths:
+  - app/services/assortment_lifecycle_facts.py
+  - tests/test_assortment_lifecycle_facts.py
+  - tests/test_build_assortment_lifecycle_updates_task.py
+  - config/assortment/display-supplier-order-line-mapping.json
+  - docs/specs/assortment-lifecycle-policy.md
+  - docs/phases/assortment-lifecycle-order-corrections-rollout.yml
+  - docs/evidence/assortment-lifecycle-order-corrections-rollout.yml
+  - docs/evidence/assortment-lifecycle-order-corrections-night-readback.py
+approval:
+  status: approved
+  approved_by: user
+  approved_at: "2026-09-12T18:01:00+03:00"
+  source: "Текущая задача Codex: PLEASE IMPLEMENT THIS PLAN — Разовая установка учёта корректировок заказов поставщику; рабочий пересчёт следующей ночью."
+verification:
+  - id: regression-tests
+    command: PYTHONPATH=. ./.venv/bin/python -m pytest tests/test_assortment_lifecycle_facts.py tests/test_assortment_lifecycle.py tests/test_refresh_assortment_lifecycle_classification_task.py tests/test_build_assortment_lifecycle_updates_task.py
+    expected_result: Полное/частичное снятие, сумма корректировок, исторический отбор и неполный конфиг проверены.
+  - id: project-checks
+    command: Ruff, Black, полный pytest, OpenAPI, архитектурные проверки, реестр CLI и валидаторы документации из clean worktree.
+    expected_result: Все обязательные проверки успешны; посторонние ошибки блокируют установку.
+  - id: read-only-before-after
+    command: Сравнить старый и новый расчёт через --dry-run с явным конфигом кандидата и проверить контрольную карточку из локального отчёта.
+    expected_result: Записей в рабочие базы нет; отменённый заказ не даёт статуса «В пути».
+  - id: release-readback
+    command: Штатный release-controller check/switch/status, проверка API и dry-run установленного релиза с общим конфигом.
+    expected_result: Активен проверенный релиз; конфиг включает корректировки; сервис работоспособен.
+  - id: next-night-readback
+    command: После следующего окна 04:00–06:00 МСК прочитать состояние ночного запуска, классификацию PostgreSQL и предложения переходов приложения.
+    expected_result: Ночной запуск успешен; статусы объясняются актуальными живыми заказами, ручной пересчёт не запускался.
+stop_condition: "Ошибка обязательной проверки блокирует публикацию и установку. После успешной установки ожидать следующего ночного результата; не отмечать приёмку до его проверки."
+status: in_progress

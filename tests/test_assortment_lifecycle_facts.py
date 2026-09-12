@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import create_engine, text
+import pytest
+from sqlalchemy import create_engine, event, text
 
 from app.services.assortment_lifecycle_facts import (
     DocumentLineMapping,
     _chunks,
+    _fetch_first_document_event_rows,
     _folder_like_patterns,
     build_assortment_lifecycle_fact_records,
+    drop_cancelled_order_lines,
     enrich_nomenclature_rows_with_product_snapshot,
+    fetch_order_correction_deltas,
     validate_document_line_mapping,
     validate_warehouse_policy,
 )
@@ -153,6 +159,192 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
         "transit",
         "rare",
     ]
+
+
+def test_cancelled_order_lines_are_dropped_and_partial_shipment_survives() -> None:
+    # Синтетический пример: корректировка снимает всю позицию первой партии,
+    # второй заказ живой, а для другого товара сохраняется частичная отправка.
+    rows = [
+        {
+            "document_ref": "cancelled-order",
+            "nomenclature_ref": "test-item",
+            "line_quantity": "10",
+            "cargo_handoff_date": "2026-08-28",
+        },
+        {
+            "document_ref": "live-order",
+            "nomenclature_ref": "test-item",
+            "line_quantity": "10",
+            "cargo_handoff_date": None,
+        },
+        {
+            "document_ref": "partial-order",
+            "nomenclature_ref": "item-battery",
+            "line_quantity": "100",
+            "cargo_handoff_date": "2026-09-01",
+        },
+    ]
+    deltas = {
+        ("cancelled-order", "test-item"): Decimal("-10"),
+        ("partial-order", "item-battery"): Decimal("-1"),
+    }
+
+    kept = drop_cancelled_order_lines(rows, deltas)
+
+    kept_orders = {row["document_ref"] for row in kept}
+    # Снятая подчистую позиция не даёт ни заказа, ни сдачи в cargo.
+    assert "cancelled-order" not in kept_orders
+    # Живой заказ остаётся.
+    assert "live-order" in kept_orders
+    # Частичное снятие не отменяет отправку: заказано 100, снято 1, едет 99.
+    assert "partial-order" in kept_orders
+
+
+def test_order_lines_survive_when_corrections_are_absent() -> None:
+    rows = [{"document_ref": "zakaz-1", "nomenclature_ref": "item-1", "line_quantity": "5"}]
+
+    assert len(drop_cancelled_order_lines(rows, {})) == 1
+
+
+@pytest.mark.parametrize(
+    "delta, survives", [("-10", False), ("-11", False), ("-7", True), ("2", True)]
+)
+def test_corrections_sum_duplicate_lines_once_per_order_and_item(delta, survives) -> None:
+    rows = [
+        {"document_ref": "order", "nomenclature_ref": "item", "line_quantity": qty}
+        for qty in ("4", "6")
+    ]
+    other = {"document_ref": "order", "nomenclature_ref": "other", "line_quantity": "1"}
+    another_order = {"document_ref": "next", "nomenclature_ref": "item", "line_quantity": "1"}
+
+    kept = drop_cancelled_order_lines(
+        [*rows, other, another_order], {("order", "item"): Decimal(delta)}
+    )
+
+    assert kept == ([*rows, other, another_order] if survives else [other, another_order])
+
+
+def test_zero_quantity_without_corrections_is_not_an_order_event() -> None:
+    rows = [{"document_ref": "order", "nomenclature_ref": "item", "line_quantity": "0"}]
+    assert drop_cancelled_order_lines(rows, {}) == []
+
+
+def test_legacy_rows_without_quantity_keep_backward_compatibility() -> None:
+    rows = [{"document_ref": "order", "nomenclature_ref": "item"}]
+    assert drop_cancelled_order_lines(rows, {}) == rows
+
+
+def _correction_test_mapping() -> DocumentLineMapping:
+    return DocumentLineMapping(
+        document_table="orders",
+        line_table="order_lines",
+        line_document_column="order_ref",
+        line_nomenclature_column="item_ref",
+        line_quantity_column="quantity",
+        cargo_handoff_column="cargo",
+        correction_document_table="corrections",
+        correction_line_table="correction_lines",
+        correction_order_column="order_ref",
+        correction_line_document_column="correction_ref",
+        correction_nomenclature_column="item_ref",
+        correction_quantity_column="quantity",
+    )
+
+
+@pytest.fixture
+def correction_sql_engine():
+    """Execute production SELECTs locally; translate only SQL Server syntax.
+
+    Joins, filters, grouping and HAVING are executed by SQLite, not mocked.
+    Reference IDs are text and the posted/marked flags are integers in this fixture.
+    """
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        for query in (
+            "CREATE TABLE orders (_IDRRef TEXT, _Date_Time TEXT, cargo TEXT, _Posted INT, _Marked INT)",
+            "CREATE TABLE order_lines (order_ref TEXT, item_ref TEXT, quantity NUMERIC)",
+            "CREATE TABLE corrections (_IDRRef TEXT, order_ref TEXT, _Posted INT, _Marked INT)",
+            "CREATE TABLE correction_lines (correction_ref TEXT, item_ref TEXT, quantity NUMERIC)",
+            "INSERT INTO orders VALUES ('cancelled', '2024-01-01', '2024-01-05', 1, 0),"
+            " ('next', '2026-09-01', NULL, 1, 0),"
+            " ('partial', '2025-01-01', '2025-01-05', 1, 0),"
+            " ('draft', '2023-01-01', '2023-01-05', 0, 0),"
+            " ('deleted', '2023-02-01', '2023-02-05', 1, 1)",
+            "INSERT INTO order_lines VALUES ('cancelled', 'item', 4), ('cancelled', 'item', 6),"
+            " ('cancelled', 'gone', 10), ('next', 'item', 10),"
+            " ('partial', 'partial-item', 4), ('partial', 'partial-item', 6),"
+            " ('draft', 'item', 100), ('deleted', 'item', 100)",
+            "INSERT INTO corrections VALUES ('c1', 'cancelled', 1, 0),"
+            " ('c2', 'cancelled', 1, 0), ('c3', 'partial', 1, 0),"
+            " ('draft-c', 'next', 0, 0), ('deleted-c', 'next', 1, 1),"
+            " ('add', 'next', 1, 0)",
+            "INSERT INTO correction_lines VALUES ('c1', 'item', -7), ('c2', 'item', -3),"
+            " ('c1', 'gone', -11), ('c3', 'partial-item', -7),"
+            " ('draft-c', 'item', -100), ('deleted-c', 'item', -100), ('add', 'item', 2)",
+        ):
+            conn.execute(text(query))
+
+    @event.listens_for(engine, "before_cursor_execute", retval=True)
+    def translate_sqlserver_syntax(conn, cursor, statement, parameters, context, executemany):
+        statement = re.sub(r"CONVERT\(varchar\(34\), ([\w.\[\]]+), 1\)", r"\1", statement)
+        statement = statement.replace("CONVERT(datetime, '17530101', 112)", "'1753-01-01'")
+        statement = statement.replace("dbo.", "").replace(" WITH (NOLOCK)", "")
+        return statement.replace("ISNULL(", "IFNULL("), parameters
+
+    yield engine
+    engine.dispose()
+
+
+def test_correction_query_sums_only_posted_not_deleted_documents(correction_sql_engine) -> None:
+    deltas = fetch_order_correction_deltas(
+        correction_sql_engine, _correction_test_mapping(), allowed_refs={"item", "partial-item"}
+    )
+    assert deltas == {
+        ("cancelled", "item"): Decimal("-10"),
+        ("next", "item"): Decimal("2"),
+        ("partial", "partial-item"): Decimal("-7"),
+    }
+
+
+def test_historical_aggregate_excludes_cancelled_orders_and_keeps_partial(correction_sql_engine):
+    rows = _fetch_first_document_event_rows(
+        correction_sql_engine,
+        _correction_test_mapping(),
+        allowed_refs={"item", "partial-item", "gone"},
+    )
+    by_ref = {row["nomenclature_ref"]: row for row in rows}
+    assert set(by_ref) == {"item", "partial-item"}
+    assert by_ref["item"]["order_date"] == "2026-09-01"
+    assert by_ref["item"]["cargo_handoff_date"] is None
+    assert by_ref["partial-item"]["order_date"] == "2025-01-01"
+    assert by_ref["partial-item"]["cargo_handoff_date"] == "2025-01-05"
+
+
+def test_correction_mapping_validates_existing_columns(correction_sql_engine) -> None:
+    assert validate_document_line_mapping(correction_sql_engine, _correction_test_mapping()) == ()
+    bad = replace(_correction_test_mapping(), correction_quantity_column="missing_quantity")
+    assert "column_missing:correction_lines.missing_quantity" in validate_document_line_mapping(
+        correction_sql_engine, bad
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "line_quantity_column",
+        "correction_document_table",
+        "correction_line_table",
+        "correction_order_column",
+        "correction_line_document_column",
+        "correction_nomenclature_column",
+        "correction_quantity_column",
+    ],
+)
+def test_partial_correction_mapping_blocks_classification(correction_sql_engine, field) -> None:
+    mapping = replace(_correction_test_mapping(), **{field: ""})
+    assert f"correction_mapping_missing:{field}" in validate_document_line_mapping(
+        correction_sql_engine, mapping
+    )
 
 
 def test_build_facts_excludes_bitok_before_events_and_summary() -> None:

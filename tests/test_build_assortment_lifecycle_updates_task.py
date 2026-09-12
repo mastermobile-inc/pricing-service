@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _display_lifecycle_fact() -> dict[str, object]:
     return {
@@ -34,13 +36,22 @@ def _display_lifecycle_fact() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize(
+    ("receipt_dates", "expected_status"),
+    [([], "in_transit"), (["2026-06-24"], "new_item")],
+)
 def test_build_assortment_lifecycle_updates_task_writes_export_rows(
     tmp_path: Path,
+    receipt_dates: list[str],
+    expected_status: str,
 ) -> None:
     input_path = tmp_path / "facts.json"
     output_path = tmp_path / "property-updates.json"
     input_path.write_text(
-        json.dumps({"items": [_display_lifecycle_fact()]}, ensure_ascii=False),
+        json.dumps(
+            {"items": [{**_display_lifecycle_fact(), "receipt_dates": receipt_dates}]},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -71,7 +82,7 @@ def test_build_assortment_lifecycle_updates_task_writes_export_rows(
     # Решение 2026-08-18: стадия лестницы в 1С не уходит, остаётся только
     # профиль закупочного поведения.
     assert summary["rows"] == 1
-    assert item["status"] == "new_item"
+    assert item["status"] == expected_status
     assert item["export_blockers"] == ["lifecycle_stage_not_exported"]
     assert item["expensive_profile"] == "fast_expensive"
     assert item["sales_point_warehouse_codes"] == ["shop-1"]
@@ -343,7 +354,7 @@ def test_build_assortment_lifecycle_updates_exports_complete_exclusive_mark(
     )
 
     summary = json.loads(result.stdout)
-    assert summary["items"][0]["status"] == "new_item"
+    assert summary["items"][0]["status"] == "in_transit"
     assert summary["items"][0]["commercial_marks"] == ["exclusive"]
     assert summary["items"][0]["export_blockers"] == ["lifecycle_stage_not_exported"]
 

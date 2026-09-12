@@ -76,6 +76,31 @@ class DocumentLineMapping:
     marked_column: str = "_Marked"
     line_price_column: str = ""
     cargo_handoff_column: str = ""
+    # Решение 2026-09-12: позиция заказа считается по факту после корректировок.
+    # Поставщик редко собирает заказ целиком; перед сдачей партии в cargo
+    # количество актуализируют документом «Корректировка заказа поставщику»,
+    # и снятая позиция физически не едет.
+    line_quantity_column: str = ""
+    correction_document_table: str = ""
+    correction_line_table: str = ""
+    correction_order_column: str = ""
+    correction_line_document_column: str = ""
+    correction_nomenclature_column: str = ""
+    correction_quantity_column: str = ""
+
+    @property
+    def corrections_configured(self) -> bool:
+        return all(
+            (
+                self.line_quantity_column,
+                self.correction_document_table,
+                self.correction_line_table,
+                self.correction_order_column,
+                self.correction_line_document_column,
+                self.correction_nomenclature_column,
+                self.correction_quantity_column,
+            )
+        )
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> DocumentLineMapping:
@@ -90,6 +115,15 @@ class DocumentLineMapping:
             marked_column=str(payload.get("marked_column") or "_Marked"),
             line_price_column=str(payload.get("line_price_column") or ""),
             cargo_handoff_column=str(payload.get("cargo_handoff_column") or ""),
+            line_quantity_column=str(payload.get("line_quantity_column") or ""),
+            correction_document_table=str(payload.get("correction_document_table") or ""),
+            correction_line_table=str(payload.get("correction_line_table") or ""),
+            correction_order_column=str(payload.get("correction_order_column") or ""),
+            correction_line_document_column=str(
+                payload.get("correction_line_document_column") or ""
+            ),
+            correction_nomenclature_column=str(payload.get("correction_nomenclature_column") or ""),
+            correction_quantity_column=str(payload.get("correction_quantity_column") or ""),
         )
 
 
@@ -442,6 +476,18 @@ def build_procurement_feature_snapshot_fields(
 
 def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping) -> tuple[str, ...]:
     issues: list[str] = []
+    correction_fields = (
+        "correction_document_table",
+        "correction_line_table",
+        "correction_order_column",
+        "correction_line_document_column",
+        "correction_nomenclature_column",
+        "correction_quantity_column",
+    )
+    if any(getattr(mapping, field) for field in correction_fields):
+        for field in ("line_quantity_column", *correction_fields):
+            if not getattr(mapping, field):
+                issues.append(f"correction_mapping_missing:{field}")
     table_columns: dict[str, set[str]] = {}
     for table in (mapping.document_table, mapping.line_table):
         columns = _table_columns(engine, table)
@@ -461,8 +507,39 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     line_required = {mapping.line_document_column, mapping.line_nomenclature_column}
     if mapping.line_price_column:
         line_required.add(mapping.line_price_column)
+    if mapping.line_quantity_column:
+        line_required.add(mapping.line_quantity_column)
     for column in sorted(line_required - table_columns[mapping.line_table]):
         issues.append(f"column_missing:{mapping.line_table}.{column}")
+    # Решение 2026-09-12: маппинг корректировок заказа проверяется тем же gate —
+    # неверная колонка должна останавливать прогон, а не молча возвращать
+    # позиции, снятые из партии.
+    if mapping.corrections_configured:
+        for table, required in (
+            (
+                mapping.correction_document_table,
+                {
+                    mapping.document_id_column,
+                    mapping.posted_column,
+                    mapping.marked_column,
+                    mapping.correction_order_column,
+                },
+            ),
+            (
+                mapping.correction_line_table,
+                {
+                    mapping.correction_line_document_column,
+                    mapping.correction_nomenclature_column,
+                    mapping.correction_quantity_column,
+                },
+            ),
+        ):
+            columns = _table_columns(engine, table)
+            if not columns:
+                issues.append(f"table_missing:{table}")
+                continue
+            for column in sorted(required - columns):
+                issues.append(f"column_missing:{table}.{column}")
     return tuple(issues)
 
 
@@ -620,6 +697,14 @@ def fetch_onec_lifecycle_source_rows(
         cargo_alias="cargo_handoff_date",
         value_alias="line_price",
     )
+    # Решение 2026-09-12: позиции, снятые корректировкой заказа, в партию не
+    # попали — убираем их до сбора фактов, иначе карточка «едет» на бумаге.
+    correction_deltas = fetch_order_correction_deltas(
+        engine,
+        supplier_mapping,
+        allowed_refs=allowed_refs,
+    )
+    supplier_rows = drop_cancelled_order_lines(supplier_rows, correction_deltas)
     # Детальные строки ограничены рабочим окном (обычно 24 месяца), но факт
     # первого движения нельзя терять: иначе старый товар без свежих документов
     # снова выглядит как только что созданный. Добавляем по одной all-time
@@ -898,13 +983,21 @@ def _fetch_document_line_rows(
         if value_alias and mapping.line_price_column
         else ""
     )
+    quantity_select = (
+        f", line.{_ident(mapping.line_quantity_column)} AS line_quantity"
+        if mapping.line_quantity_column
+        else ""
+    )
     query = text(f"""
         SELECT
             CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
                 AS nomenclature_ref,
+            CONVERT(varchar(34), line.{_ident(mapping.line_document_column)}, 1)
+                AS document_ref,
             doc.{_ident(mapping.document_date_column)} AS document_date
             {cargo_select}
             {value_select}
+            {quantity_select}
         FROM dbo.{_ident(mapping.line_table)} AS line WITH (NOLOCK)
         JOIN dbo.{_ident(mapping.document_table)} AS doc WITH (NOLOCK)
             ON doc.{_ident(mapping.document_id_column)} = line.{_ident(mapping.line_document_column)}
@@ -929,8 +1022,11 @@ def _fetch_document_line_rows(
     for row in raw_rows:
         item = {
             "nomenclature_ref": _clean(row.get("nomenclature_ref")),
+            "document_ref": _clean(row.get("document_ref")),
             "document_date": _json_date(_date(row.get("document_date"))),
         }
+        if mapping.line_quantity_column:
+            item["line_quantity"] = _json_decimal(_decimal(row.get("line_quantity")) or Decimal(0))
         if cargo_alias:
             item[cargo_alias] = _json_date(_date(row.get(cargo_alias)))
             item["order_date"] = item["document_date"]
@@ -942,6 +1038,87 @@ def _fetch_document_line_rows(
                 item[value_alias] = _json_decimal(value)
         result.append(item)
     return result
+
+
+def fetch_order_correction_deltas(
+    engine: Engine,
+    mapping: DocumentLineMapping,
+    *,
+    allowed_refs: set[str],
+) -> dict[tuple[str, str], Decimal]:
+    """Суммарная правка количества по паре «заказ + номенклатура».
+
+    Решение 2026-09-12. Документ «Корректировка заказа поставщику» хранит правку
+    со знаком: снятие минусом, добавление плюсом. Учитываются только проведённые
+    и не помеченные на удаление документы.
+    """
+
+    if not mapping.corrections_configured:
+        return {}
+    refs = sorted(allowed_refs)
+    query = text(f"""
+        SELECT
+            CONVERT(varchar(34), doc.{_ident(mapping.correction_order_column)}, 1) AS order_ref,
+            CONVERT(varchar(34), line.{_ident(mapping.correction_nomenclature_column)}, 1)
+                AS nomenclature_ref,
+            SUM(line.{_ident(mapping.correction_quantity_column)}) AS delta
+        FROM dbo.{_ident(mapping.correction_line_table)} AS line WITH (NOLOCK)
+        JOIN dbo.{_ident(mapping.correction_document_table)} AS doc WITH (NOLOCK)
+            ON doc.{_ident(mapping.document_id_column)}
+                = line.{_ident(mapping.correction_line_document_column)}
+        WHERE doc.{_ident(mapping.marked_column)} = 0x00
+          AND doc.{_ident(mapping.posted_column)} = 0x01
+          AND CONVERT(varchar(34), line.{_ident(mapping.correction_nomenclature_column)}, 1)
+              IN :refs
+        GROUP BY
+            CONVERT(varchar(34), doc.{_ident(mapping.correction_order_column)}, 1),
+            CONVERT(varchar(34), line.{_ident(mapping.correction_nomenclature_column)}, 1)
+        """).bindparams(bindparam("refs", expanding=True))
+    deltas: dict[tuple[str, str], Decimal] = {}
+    with engine.connect() as conn:
+        for refs_chunk in _chunks(refs, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"refs": refs_chunk}).mappings():
+                order_ref = _clean(row.get("order_ref"))
+                item_ref = _clean(row.get("nomenclature_ref"))
+                delta = _decimal(row.get("delta"))
+                if order_ref and item_ref and delta is not None:
+                    key = (order_ref, item_ref)
+                    deltas[key] = deltas.get(key, Decimal(0)) + delta
+    return deltas
+
+
+def drop_cancelled_order_lines(
+    rows: Sequence[Mapping[str, Any]],
+    deltas: Mapping[tuple[str, str], Decimal],
+) -> list[dict[str, Any]]:
+    """Убрать позиции, которых после корректировок в заказе не осталось.
+
+    Решение 2026-09-12: итог «количество в заказе + корректировки» не больше нуля
+    означает, что позиция в партию не попала. Такой заказ по ней не учитывается
+    нигде — ни как первый заказ, ни как сдача в cargo.
+    """
+
+    ordered: dict[tuple[str, str], Decimal] = {}
+    for row in rows:
+        key = (_clean(row.get("document_ref")), _clean(row.get("nomenclature_ref")))
+        if not key[0] or not key[1]:
+            continue
+        quantity = _decimal(row.get("line_quantity"))
+        if quantity is None:
+            continue
+        ordered[key] = ordered.get(key, Decimal(0)) + quantity
+    cancelled = {
+        key for key, quantity in ordered.items() if quantity + deltas.get(key, Decimal(0)) <= 0
+    }
+    if not cancelled:
+        return [dict(row) for row in rows]
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        key = (_clean(row.get("document_ref")), _clean(row.get("nomenclature_ref")))
+        if key in cancelled:
+            continue
+        kept.append(dict(row))
+    return kept
 
 
 def _fetch_first_document_event_rows(
@@ -958,19 +1135,61 @@ def _fetch_first_document_event_rows(
             f", MIN(CASE WHEN {cargo_column} > CONVERT(datetime, '17530101', 112) "
             f"THEN {cargo_column} END) AS first_cargo_handoff_date"
         )
+    # Решение 2026-09-12: снятые корректировкой позиции не дают исторических фактов —
+    # ни первого заказа, ни первой сдачи в cargo. Отбор идёт по паре
+    # «заказ + номенклатура» с ненулевым остатком после корректировок.
+    correction_join = ""
+    net_quantity_filter = ""
+    if mapping.corrections_configured:
+        correction_join = f"""
+        LEFT JOIN (
+            SELECT
+                korr.{_ident(mapping.correction_order_column)} AS order_ref,
+                korr_line.{_ident(mapping.correction_nomenclature_column)} AS item_ref,
+                SUM(korr_line.{_ident(mapping.correction_quantity_column)}) AS delta
+            FROM dbo.{_ident(mapping.correction_line_table)} AS korr_line WITH (NOLOCK)
+            JOIN dbo.{_ident(mapping.correction_document_table)} AS korr WITH (NOLOCK)
+                ON korr.{_ident(mapping.document_id_column)}
+                    = korr_line.{_ident(mapping.correction_line_document_column)}
+            WHERE korr.{_ident(mapping.marked_column)} = 0x00
+              AND korr.{_ident(mapping.posted_column)} = 0x01
+            GROUP BY
+                korr.{_ident(mapping.correction_order_column)},
+                korr_line.{_ident(mapping.correction_nomenclature_column)}
+        ) AS korrektirovka
+            ON korrektirovka.order_ref = line.{_ident(mapping.line_document_column)}
+           AND korrektirovka.item_ref = line.{_ident(mapping.line_nomenclature_column)}"""
+        net_quantity_filter = (
+            f"HAVING SUM(line.{_ident(mapping.line_quantity_column)}) "
+            "+ ISNULL(MAX(korrektirovka.delta), 0) > 0"
+        )
     query = text(f"""
+        WITH live_lines AS (
+            SELECT
+                CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
+                    AS nomenclature_ref,
+                MIN(doc.{_ident(mapping.document_date_column)}) AS document_date
+                {cargo_select}
+            FROM dbo.{_ident(mapping.line_table)} AS line WITH (NOLOCK)
+            JOIN dbo.{_ident(mapping.document_table)} AS doc WITH (NOLOCK)
+                ON doc.{_ident(mapping.document_id_column)}
+                    = line.{_ident(mapping.line_document_column)}
+            {correction_join}
+            WHERE doc.{_ident(mapping.marked_column)} = 0x00
+              AND doc.{_ident(mapping.posted_column)} = 0x01
+              AND CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
+                  IN :refs
+            GROUP BY
+                CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1),
+                line.{_ident(mapping.line_document_column)}
+            {net_quantity_filter}
+        )
         SELECT
-            CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
-                AS nomenclature_ref,
-            MIN(doc.{_ident(mapping.document_date_column)}) AS first_document_date
-            {cargo_select}
-        FROM dbo.{_ident(mapping.line_table)} AS line WITH (NOLOCK)
-        JOIN dbo.{_ident(mapping.document_table)} AS doc WITH (NOLOCK)
-            ON doc.{_ident(mapping.document_id_column)} = line.{_ident(mapping.line_document_column)}
-        WHERE doc.{_ident(mapping.marked_column)} = 0x00
-          AND doc.{_ident(mapping.posted_column)} = 0x01
-          AND CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1) IN :refs
-        GROUP BY CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
+            nomenclature_ref,
+            MIN(document_date) AS first_document_date
+            {", MIN(first_cargo_handoff_date) AS first_cargo_handoff_date" if mapping.cargo_handoff_column else ""}
+        FROM live_lines
+        GROUP BY nomenclature_ref
         """).bindparams(bindparam("refs", expanding=True))
     result: list[dict[str, Any]] = []
     with engine.connect() as conn:

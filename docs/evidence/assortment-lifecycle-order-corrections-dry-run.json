@@ -1,0 +1,10 @@
+{
+  "dry_run": true,
+  "property_update_mode": "disabled",
+  "property_update_rows": 0,
+  "source_status": "dry_run",
+  "status": "ready",
+  "written_items": 0,
+  "public_summary_only": true,
+  "note": "Внутренние данные и распределения статусов сохранены локально; не публикуются в GitHub."
+}
