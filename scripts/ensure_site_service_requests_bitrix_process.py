@@ -58,6 +58,17 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
             ("error", "Ошибка отправки"),
         ),
     },
+    {
+        "key": "close_without_response_reason",
+        "title": "Закрыть без ответа: причина",
+        "type": "enumeration",
+        "enum": (
+            ("spam", "Спам или ошибочное обращение"),
+            ("duplicate", "Дубль другого обращения"),
+            ("resolved_elsewhere", "Клиент решил вопрос сам или по телефону"),
+            ("technical", "Техническая или тестовая карточка"),
+        ),
+    },
     {"key": "site_last_sync_at", "title": "Последняя синхронизация", "type": "datetime"},
     {"key": "first_response_due_at", "title": "Срок первого ответа", "type": "datetime"},
     {"key": "first_response_at", "title": "Первый ответ доставлен", "type": "datetime"},
@@ -100,7 +111,13 @@ FORM_SECTIONS = (
     (
         "site_reply",
         "Ответ клиенту",
-        ("site_reply_text", "site_reply_action", "site_reply_status", "site_last_sync_at"),
+        (
+            "site_reply_text",
+            "site_reply_action",
+            "site_reply_status",
+            "close_without_response_reason",
+            "site_last_sync_at",
+        ),
     ),
     (
         "technical",

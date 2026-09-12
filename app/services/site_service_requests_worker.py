@@ -2652,6 +2652,9 @@ def reconcile_site_service_request_assignments(
             _lock_site_service_request_assignment_sequence(session)
             query = select(SiteServiceRequestCase).where(
                 SiteServiceRequestCase.bitrix_item_id.is_not(None),
+                # Карточку, закрытую административно с указанной причиной, worker
+                # больше не трогает: решение по ней уже принято человеком.
+                SiteServiceRequestCase.closed_without_response_at.is_(None),
                 or_(
                     SiteServiceRequestCase.first_response_at.is_(None),
                     escalation_delivery_pending,
@@ -2806,10 +2809,22 @@ def reconcile_site_service_request_assignments(
                 )
                 fields[field_map["site_sync_error"]] = case.last_error_code
             if current_stage_id in closed_stage_ids:
-                return_stage_id = case.last_open_stage_id or fallback_open_stage_id
-                if return_stage_id:
-                    fields["stageId"] = return_stage_id
-                    close_reverted = True
+                close_reason = _site_service_request_close_reason(
+                    item,
+                    field_map=field_map,
+                    settings=settings,
+                )
+                if close_reason is not None:
+                    # Административное закрытие: ответа клиенту не было, но человек
+                    # указал причину. Гейт отпускает карточку и фиксирует причину,
+                    # чтобы SLA отличал «ответили» от «закрыли без ответа».
+                    case.closed_without_response_at = current_time
+                    case.close_without_response_reason = close_reason
+                else:
+                    return_stage_id = case.last_open_stage_id or fallback_open_stage_id
+                    if return_stage_id:
+                        fields["stageId"] = return_stage_id
+                        close_reverted = True
             if decision.assigned_user_id is not None or decision.state == "waiting":
                 fields["assignedById"] = decision.assigned_user_id
             escalated_now = not was_escalated and decision.escalated_at is not None
@@ -3755,6 +3770,35 @@ def _deal_id_titles_from_rows(result: list[dict[str, Any]]) -> list[tuple[int, s
             raise RuntimeError("bitrix_deal_readback_invalid")
         rows.append((deal_id, title))
     return rows
+
+
+def _site_service_request_close_reason(
+    item: Any,
+    *,
+    field_map: dict[str, str],
+    settings: Settings,
+) -> str | None:
+    """Код причины административного закрытия из карточки, иначе None.
+
+    Пустое поле означает обычное закрытие, которое close gate обязан откатить,
+    пока по обращению нет подтверждённого первого ответа.
+    """
+
+    field_name = str(field_map.get("close_without_response_reason") or "").strip()
+    if not field_name:
+        return None
+    raw = _item_field_value(item, field_name, default=_MISSING_ITEM_FIELD)
+    if raw is _MISSING_ITEM_FIELD or raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    prefix = "close_without_response_reason_"
+    for enum_key, enum_value in (settings.site_service_requests_bitrix_enum_map or {}).items():
+        key = str(enum_key)
+        if key.startswith(prefix) and str(enum_value).strip() == value:
+            return key[len(prefix) :]
+    raise RuntimeError("bitrix_close_reason_unknown")
 
 
 def _positive_int(value: Any) -> int | None:

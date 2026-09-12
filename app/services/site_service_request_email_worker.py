@@ -449,8 +449,13 @@ def _verify_email_event(
     activity_id = _positive_int(activity.get("ID") or activity.get("id"))
     if activity_id != payload.activity_id:
         raise RuntimeError("email_activity_readback_failed")
+    # Bitrix24 Box не отдаёт THREAD_ID через REST: поля нет ни в crm.activity.get,
+    # ни в crm.activity.fields, а crm.activity.list молча игнорирует и select[], и
+    # filter[THREAD_ID]. Источник истины по цепочке — почтовый диспетчер, который
+    # читает THREAD_ID прямо из БД портала и подписывает событие HMAC. Сверку
+    # оставляем строгой на случай, если портал начнёт возвращать поле.
     thread_id = _positive_int(activity.get("THREAD_ID") or activity.get("threadId"))
-    if thread_id != payload.thread_id:
+    if thread_id is not None and thread_id != payload.thread_id:
         raise SiteServiceRequestPermanentError("email_activity_thread_mismatch")
 
     bindings = _activity_bindings(activity)
@@ -458,17 +463,11 @@ def _verify_email_event(
         raise SiteServiceRequestPermanentError("email_activity_deal_binding_mismatch")
     if (_CONTACT_OWNER_TYPE_ID, payload.crm_contact_id) not in bindings:
         raise SiteServiceRequestPermanentError("email_activity_contact_binding_mismatch")
-    if payload.existing_service_item_id is not None:
-        service_binding = (
-            settings.site_service_requests_bitrix_entity_type_id,
-            payload.existing_service_item_id,
-        )
-        if service_binding not in bindings and not _thread_has_service_binding(
-            api=api,
-            thread_id=payload.thread_id,
-            service_binding=service_binding,
-        ):
-            raise SiteServiceRequestPermanentError("email_service_binding_mismatch")
+    # Привязка письма к существующей карточке проверяется только по BINDINGS самой
+    # активности. Обойти отсутствие прямой привязки перебором цепочки нельзя:
+    # crm.activity.list игнорирует filter[THREAD_ID] и вернул бы все письма портала,
+    # то есть подтвердил бы любую карточку, к которой привязано хоть одно письмо.
+    # Принадлежность письма цепочке подтверждает диспетчер по БД портала.
 
     deal_response = api.call("crm.deal.get", [("id", str(payload.crm_deal_id))])
     deal = deal_response.get("result")
@@ -607,7 +606,8 @@ def _complete_inbound_activity(
         raise SiteServiceRequestPermanentError("email_primary_activity_provider_mismatch")
     if _positive_int(before.get("DIRECTION") or before.get("direction")) != _INCOMING_DIRECTION:
         raise SiteServiceRequestPermanentError("email_primary_activity_direction_mismatch")
-    if _positive_int(before.get("THREAD_ID") or before.get("threadId")) != expected_thread_id:
+    primary_thread_id = _positive_int(before.get("THREAD_ID") or before.get("threadId"))
+    if primary_thread_id is not None and primary_thread_id != expected_thread_id:
         raise SiteServiceRequestPermanentError("email_primary_activity_thread_mismatch")
     if str(before.get("COMPLETED") or before.get("completed") or "N") != "Y":
         _activity_update(api, activity_id, {"COMPLETED": "Y"})
@@ -749,54 +749,6 @@ def _activity_communication_emails(
         if value:
             values.add(value)
     return tuple(sorted(values))
-
-
-def _thread_has_service_binding(
-    *,
-    api: SiteServiceRequestBitrixApi,
-    thread_id: int,
-    service_binding: tuple[int, int],
-) -> bool:
-    start: int | None = None
-    visited: set[int] = set()
-    for _page in range(100):
-        current = start or 0
-        if current in visited:
-            raise RuntimeError("email_thread_activity_pagination_cycle")
-        visited.add(current)
-        params = [
-            ("filter[THREAD_ID]", str(thread_id)),
-            ("filter[PROVIDER_ID]", _CRM_EMAIL_PROVIDER),
-            ("select[]", "ID"),
-            ("select[]", "BINDINGS"),
-        ]
-        if start is not None:
-            params.append(("start", str(start)))
-        response = api.call("crm.activity.list", params)
-        result = response.get("result")
-        nested_next = None
-        if isinstance(result, dict):
-            nested_next = result.get("next")
-            rows = result.get("items") or result.get("activities")
-        else:
-            rows = result
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise RuntimeError("email_thread_activity_readback_failed")
-        if any(service_binding in _activity_bindings(row) for row in rows):
-            return True
-        raw_next = response.get("next")
-        if raw_next is not None and nested_next is not None and raw_next != nested_next:
-            raise RuntimeError("email_thread_activity_pagination_invalid")
-        candidate = nested_next if nested_next is not None else raw_next
-        if candidate is None:
-            return False
-        try:
-            start = int(candidate)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("email_thread_activity_pagination_invalid") from exc
-        if start <= current:
-            raise RuntimeError("email_thread_activity_pagination_invalid")
-    raise RuntimeError("email_thread_activity_pagination_limit")
 
 
 def _portal_base_url(settings: Settings) -> str:

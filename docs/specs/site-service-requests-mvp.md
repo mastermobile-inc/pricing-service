@@ -11,6 +11,7 @@ related_code:
   - app/models/site_service_requests.py
   - app/services/site_service_requests.py
   - app/services/site_service_requests_worker.py
+  - app/services/site_service_request_email_worker.py
   - integrations/master_mobile_site/service_ticket_bridge.php
   - scripts/ensure_site_service_requests_bitrix_process.py
   - tasks/site_service_requests_worker.py
@@ -20,6 +21,7 @@ related_tests:
   - tests/test_site_service_requests_models.py
   - tests/test_site_service_requests_php_bridge.py
   - tests/test_site_service_requests_worker.py
+  - tests/test_site_service_email_worker.py
 contracts:
   - openapi.yaml
 depends_on: []
@@ -697,6 +699,15 @@ ID существует, активен и соответствует ожида
 - `categoryId=56` и старые архивные карточки не изменяются;
 - закрытие карточки без `first_response_at` автоматически отменяется не позднее
   следующего worker tick; карточка возвращается в последнюю незакрытую стадию;
+- исключение — административное закрытие: если заполнено поле
+  `close_without_response_reason`, worker принимает закрытие, фиксирует
+  `closed_without_response_at` и причину и больше не трогает карточку. Нераспознанное
+  значение причины гейт не открывает;
+- `closed_without_response_at` не подменяет `first_response_at`: в SLA такая карточка
+  остаётся обращением без ответа клиенту;
+- принадлежность письма цепочке подтверждает почтовый диспетчер по БД портала:
+  Bitrix24 Box не отдаёт `THREAD_ID` через REST, поэтому REST-сверка цепочки
+  выполняется только когда портал фактически вернул поле;
 - финансовое решение остаётся человеческим; код только маршрутизирует и фиксирует;
 - тексты сообщений, телефоны, e-mail, webhook и подписи не попадают в обычные логи;
 - production writes, миграции сайта, поля Bitrix и deploy выполняются только после
@@ -948,6 +959,12 @@ Rollback:
 dry-run с трассировкой.
 
 # Changelog
+- 2026-09-12 — по решению пользователя закрыты D1-D3: цепочку письма подтверждает
+  диспетчер (REST-сверка `THREAD_ID` стала мягкой, перебор цепочки удалён как дающий
+  ложное подтверждение), добавлено административное закрытие с обязательной причиной
+  `close_without_response_reason` и полями case `closed_without_response_at`/
+  `close_without_response_reason`. Отметка первого ответа задним числом отклонена:
+  она исказила бы SLA и скрыла клиентов без ответа.
 - 2026-09-12 — зафиксированы открытые дефекты D1-D4 по обращению «закрытые тикеты
   возвращаются в очередь»: REST Bitrix не отдаёт `THREAD_ID`, поэтому проверка
   почтовой цепочки и `_thread_has_service_binding` нерабочие; close gate накопил

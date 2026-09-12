@@ -86,6 +86,10 @@ class SiteServiceRequestCase(Base):
     primary_activity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bitrix_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_open_stage_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    closed_without_response_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    close_without_response_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     crm_contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     crm_company_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     crm_deal_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
