@@ -1,0 +1,47 @@
+{
+  "observed_at": "2026-09-12T15:28:01.007079+03:00",
+  "candidate_base": "da09785b93093fdb47ab56ac2c5cee51f2ea3d30",
+  "active_commit": "5cf426ead2bc4784335f58ee6380e9fa4b238c91",
+  "production_changed": false,
+  "git_published": false,
+  "checks": {
+    "focused": {
+      "counts": {
+        "tests": 172,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_sha256": "481b809d5c50db0a2c50a4b8a5fbc28ca3ef7517d199023eb734b7243c97f046",
+      "log_sha256": "537005bfc26fbe9174d43ef655a0faff884e45793a716a7a6830234dcfa77f33"
+    },
+    "full": {
+      "counts": {
+        "tests": 189,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_sha256": "704b200ef18bade88fb2f32e54957084711f14d2c71675f0a13e79e0e633b045",
+      "log_sha256": "5bbc493668adbe88dd34dd1b342290b4c203f61048e175513e6012e9bf63742e"
+    },
+    "active-baseline": {
+      "counts": {
+        "tests": 1,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "xml_sha256": "572cecc484b769a5e9c6bee37582c87ce2d04572f8751c17988d8f5af9c59618",
+      "log_sha256": "10e402c9401f08eb93c626370621ad660ad7315b6d5bd4e883ba43970d3ffc57"
+    }
+  },
+  "blocker": "Full test suite stops on existing assortment lifecycle expectation: in_transit != new_item. Same failure reproduced against active production source; unrelated to FIFO.",
+  "remaining": [
+    "Full mandatory checks PASS on current release base",
+    "Git publication",
+    "Controller build/check/switch and rollback preparation",
+    "Cache rebuild and narrow Bitrix document/age update with readback",
+    "Authorized CRM UI evidence or explicit documented proof gap"
+  ]
+}

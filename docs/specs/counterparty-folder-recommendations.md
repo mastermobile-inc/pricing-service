@@ -25,12 +25,12 @@ depends_on:
   - docs/specs/ut103-bot-command-file-exchange.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-10"
+updated_at: "2026-09-12"
 delivery_control:
   risk: high
-  phase_records: [docs/phases/receivables-fifo-20260910.yml]
-  evidence_records: [docs/evidence/receivables-fifo-20260910.yml]
-  review_records: [docs/reviews/receivables-fifo-20260910.yml]
+  phase_records: [docs/phases/receivables-fifo-20260910.yml, docs/phases/receivables-fifo-deploy-preflight-20260912.yml, docs/phases/receivables-fifo-deploy-20260912.yml]
+  evidence_records: [docs/evidence/receivables-fifo-20260910.yml, docs/evidence/receivables-fifo-deploy-20260912.yml]
+  review_records: [docs/reviews/receivables-fifo-20260910.yml, docs/reviews/receivables-fifo-deploy-20260912.yml]
 ---
 
 # Назначение
@@ -432,6 +432,10 @@ GET /api/management/counterparty-folder-changes?date=YYYY-MM-DD
    `UT103_EXCHANGE_ROOT`, сначала только в `dry_run`.
 
 # Changelog
+
+- 2026-09-12 — разрешена публикация и установка FIFO; новая фаза остановлена
+  из-за обязательного теста ассортимента на активной базе. Финансовые данные,
+  рабочая витрина и общая подпись не менялись.
 
 - 2026-09-10 — согласовано общее FIFO-распределение погашений: старые РТУ
   закрываются первыми, папка определяется оставшимися открытыми документами;

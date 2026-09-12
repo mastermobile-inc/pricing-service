@@ -1,0 +1,49 @@
+{
+  "dry_run": true,
+  "folder": "дисплеи",
+  "items_total": 2744,
+  "property_update_message_id": null,
+  "property_update_mode": "disabled",
+  "property_update_path": null,
+  "property_update_rows": 0,
+  "run_id": null,
+  "run_key": "assortment-lifecycle:дисплеи:20260912130208",
+  "source": "assortment_lifecycle_postgres_v1",
+  "source_status": "dry_run",
+  "status": "ready",
+  "summary": {
+    "auto_order_allowed": 2096,
+    "commercial_marks": {
+      "own_brand": 1
+    },
+    "expensive_profile": {
+      "fast_expensive": 15,
+      "slow_expensive": 595
+    },
+    "export_blocked": 2738,
+    "feature_snapshot_needs_mapping": 231,
+    "feature_snapshot_ready": 2513,
+    "manual_review_required": 51,
+    "statuses": {
+      "do_not_order": 2,
+      "fruit": 196,
+      "in_transit": 13,
+      "matrix": 2,
+      "new_item": 58,
+      "newborn": 28,
+      "nonliquid": 1,
+      "pension": 1,
+      "sale": 1777,
+      "sales_start": 326,
+      "working": 340
+    }
+  },
+  "transition_sync": {
+    "automatic": 0,
+    "created": 0,
+    "run_id": 0,
+    "stale": 0,
+    "updated": 0
+  },
+  "written_items": 0
+}

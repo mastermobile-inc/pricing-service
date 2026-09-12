@@ -10709,6 +10709,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-customer-prices/resolve:
+    post:
+      summary: Resolve
+      operationId: resolve_api_internal_site_customer_prices_resolve_post
+      parameters:
+      - name: x-site-price-token
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Site-Price-Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteCustomerPriceRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteCustomerPriceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AcceptSafePropertyValueSuggestionsRequest:
@@ -30075,6 +30107,61 @@ components:
           description: Частота обновления экрана
       type: object
       title: ScreenInfo
+    SiteCustomerPriceRequest:
+      properties:
+        user_id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: User Id
+      additionalProperties: false
+      type: object
+      required:
+      - user_id
+      title: SiteCustomerPriceRequest
+    SiteCustomerPriceResponse:
+      properties:
+        user_id:
+          type: integer
+          title: User Id
+        status:
+          type: string
+          enum:
+          - confirmed
+          - retail
+          - conflict
+          - unavailable
+          title: Status
+        reason:
+          type: string
+          title: Reason
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+        check_id:
+          type: string
+          title: Check Id
+        price_type:
+          type: string
+          title: Price Type
+          default: ''
+        expected_group:
+          type: string
+          title: Expected Group
+          default: ''
+        catalog_group_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Catalog Group Id
+      type: object
+      required:
+      - user_id
+      - status
+      - reason
+      - checked_at
+      - check_id
+      title: SiteCustomerPriceResponse
     SiteDefectArchiveCaseDetailResponse:
       properties:
         id:

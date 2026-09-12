@@ -1,0 +1,46 @@
+version: 1
+record_type: phase
+phase_id: assortment-lifecycle.order-corrections
+spec: docs/specs/assortment-lifecycle-policy.md
+objective: "Учесть корректировки заказа поставщику: позиция, снятая из партии, не должна давать фактов жизненного цикла."
+risk: medium
+scope:
+  - Чтение документа «Корректировка заказа поставщику» и свод правок по паре «заказ + номенклатура».
+  - Отсев позиций, у которых после корректировок не осталось количества, из строк заказов и из all-time агрегата.
+  - Расширение schema gate на таблицы и колонки корректировок.
+  - "Конфиг чтения 1С: колонка количества строки заказа и адреса таблиц корректировок."
+  - Прогон «было/стало» по папке «дисплеи» без записи в базу и внешние системы.
+non_goals:
+  - "Исправление прочих мест, читающих количество заказа без корректировок (реестр заказов, выгрузка в Bitrix, история лид-таймов, этикетки, цены) — отдельная работа по результатам аудита."
+  - Запись в 1С, публикации в Bitrix24 и Telegram, изменение автозаказа.
+  - Перевод уже классифицированных карточек без отдельного разрешения.
+dependencies:
+  - docs/phases/assortment-lifecycle-in-transit-stage.yml
+allowed_paths:
+  - app/services/assortment_lifecycle_facts.py
+  - config/assortment/display-supplier-order-line-mapping.json
+  - docs/specs/assortment-lifecycle-policy.md
+  - tests/test_assortment_lifecycle_facts.py
+  - docs/phases/assortment-lifecycle-order-corrections.yml
+  - docs/evidence/assortment-lifecycle-order-corrections.yml
+  - docs/evidence/assortment-lifecycle-order-corrections-dry-run.json
+approval:
+  status: approved
+  approved_by: user
+  approved_at: "2026-09-12T13:40:00+03:00"
+  source: docs/specs/assortment-lifecycle-policy.md#02-отбор-заказов-поставщику-корректировки
+verification:
+  - id: facts-tests
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_assortment_lifecycle_facts.py tests/test_assortment_lifecycle.py -q
+    expected_result: Тесты фактов и формулы проходят, включая отсев снятых позиций и сохранение частичной отправки.
+  - id: schema-gate
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -c "import json,os;from dotenv import load_dotenv;load_dotenv('/opt/MM/pricing-service/.env');from sqlalchemy import create_engine;from app.services.assortment_lifecycle_facts import DocumentLineMapping,validate_document_line_mapping;print(validate_document_line_mapping(create_engine(os.environ['ONEC_DATABASE_URL']),DocumentLineMapping.from_mapping(json.load(open('config/assortment/display-supplier-order-line-mapping.json')))))"
+    expected_result: Маппинг корректировок проходит проверку на живой базе без замечаний.
+  - id: style-checks
+    command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle_facts.py tests/test_assortment_lifecycle_facts.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle_facts.py tests/test_assortment_lifecycle_facts.py
+    expected_result: Ruff и Black завершаются без замечаний.
+  - id: classification-dry-run
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m tasks.refresh_assortment_lifecycle_classification --folder дисплеи --dry-run --json
+    expected_result: Расчёт по папке «дисплеи» проходит без записи в базу; распределение статусов сопоставлено с текущим снимком.
+stop_condition: "Остановиться на кандидате релиза и прогоне без записи. Сборка релиза, обновление боевого конфига чтения 1С и переключение требуют отдельного разрешения пользователя."
+status: in_progress

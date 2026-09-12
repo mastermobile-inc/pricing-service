@@ -1,0 +1,21 @@
+version: 1
+record_type: evidence
+evidence_id: receivables-fifo-deploy-20260912-preflight
+phase_id: receivables-fifo-deploy-preflight-20260912
+spec: docs/specs/counterparty-folder-recommendations.md
+observed_at: "2026-09-12T15:28:01+03:00"
+environment:
+  workspace: /opt/MM/.worktrees/receivables-fifo-20260912
+  runtime: Кандидат на da09785; активный runtime 5cf426e не переключался.
+result: failed
+verifications:
+  - id: candidate-tests
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short
+    exit_code: 1
+    observed_result: "188 passed, 1 failed; остановка на test_build_assortment_lifecycle_updates_task_writes_export_rows. Адресные FIFO-проверки: 172 passed."
+    artifact: docs/evidence/receivables-fifo-deploy-20260912-results.json
+  - id: active-baseline
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_build_assortment_lifecycle_updates_task.py::test_build_assortment_lifecycle_updates_task_writes_export_rows -q --tb=short
+    exit_code: 1
+    observed_result: Та же ошибка на исходниках активного релиза; код ассортимента и его тест идентичны кандидату.
+    artifact: docs/evidence/receivables-fifo-deploy-20260912-results.json

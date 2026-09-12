@@ -60,6 +60,7 @@ from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
 from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
+from app.api.site_customer_prices import router as site_customer_prices_router
 from app.api.site_defect_archive import page_router as site_defect_archive_page_router
 from app.api.site_defect_archive import router as site_defect_archive_router
 from app.api.site_service_requests import router as site_service_requests_router
@@ -215,3 +216,8 @@ app.include_router(sms_journal_router)
 app.include_router(procurement_labels_router, prefix="/api")
 app.include_router(procurement_assortment_router, prefix="/api")
 app.include_router(procurement_order_formation_router, prefix="/api")
+
+
+# Internal site-only price verification; resolver stays owned by mm-compensation.
+
+app.include_router(site_customer_prices_router, prefix="/api/internal/site-customer-prices")

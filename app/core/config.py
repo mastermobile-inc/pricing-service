@@ -10,6 +10,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Pricing Service"
+    site_customer_prices_enabled: bool = False
+    site_customer_prices_internal_token: str | None = None
+    site_customer_prices_resolver_argv: str | None = None
     environment: str = "development"
     debug: bool = True
     app_port: int = 8000
