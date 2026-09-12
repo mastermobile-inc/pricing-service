@@ -1,0 +1,47 @@
+version: 1
+record_type: phase
+phase_id: customer-price-type-search-task-2169-deploy-20260912
+spec: docs/specs/customer-price-type-management-v1.md
+objective: Развернуть проверенное исправление поиска №2169 через штатный immutable release и подтвердить живой runtime без записи в 1С или Bitrix.
+risk: high
+scope:
+  - Чистый кандидат от актуального origin/main только с исправлением поиска №2169.
+  - Guarded deploy через mm-pricing-service-release.
+  - Проверка службы, активного commit, frontend-ассета и доступности клиента РБ002793 в production-данных.
+non_goals:
+  - Публикация ответа в чат задачи №2169 до завершённого production-readback.
+  - Изменение типа цены, карточки клиента или иных данных в 1С.
+  - Расширение роли Арсена до технической очереди data_check.
+dependencies:
+  - customer-price-type-search-task-2169-20260912
+allowed_paths:
+  - ui/src/components/CustomerPriceTypesWorkspace.tsx
+  - ui/src/components/CustomerPriceTypesWorkspace.test.tsx
+  - docs/specs/customer-price-type-management-v1.md
+  - docs/phases/customer-price-type-search-task-2169-20260912.yml
+  - docs/phases/customer-price-type-search-task-2169-deploy-20260912.yml
+  - docs/evidence/customer-price-type-search-task-2169-20260912.yml
+  - docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+approval:
+  status: approved
+  approved_by: пользователь текущего диалога
+  approved_at: "2026-09-12T21:39:31+03:00"
+  source: Явная команда пользователя «деплой исправления поиска» после завершения локальной фазы.
+verification:
+  - id: release-deploy
+    command: /usr/local/sbin/mm-pricing-service-release deploy --source-root /tmp/pricing-cpt-search-2169-20260912 --release-name customer-price-search-2169-20260912
+    expected_result: Контроллер строит immutable release, выполняет smoke и переключает production без ошибки.
+  - id: release-status
+    command: /usr/local/sbin/mm-pricing-service-release status
+    expected_result: Активный release указывает на commit кандидата, freeze отсутствует, strict=true.
+  - id: service-status
+    command: systemctl is-active pricing-service.service
+    expected_result: Служба возвращает active.
+  - id: live-asset
+    command: rg -n "Поиск по всему портфелю|Клиент найден в портфеле" /opt/MM/pricing-service-task43-current/ui/dist/assets
+    expected_result: В активном собранном frontend присутствуют новые подписи поиска и состояния клиента.
+  - id: production-data-readback
+    command: /opt/MM/pricing-service-task43-current/.venv/bin/python -c "read-only query for РБ002793"
+    expected_result: В production-БД клиент существует и имеет технический статус data_check без разрешения изменения типа цены.
+stop_condition: При ошибке deploy или smoke не публиковать ответ Арсену; проверить фактический active release и использовать штатный rollback, если переключение произошло частично.
+status: approved

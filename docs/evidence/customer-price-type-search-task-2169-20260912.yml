@@ -1,0 +1,31 @@
+version: 1
+record_type: evidence
+evidence_id: customer-price-type-search-task-2169-20260912-local
+phase_id: customer-price-type-search-task-2169-20260912
+spec: docs/specs/customer-price-type-management-v1.md
+observed_at: "2026-09-12T21:28:09+03:00"
+environment:
+  workspace: /opt/MM/pricing-service
+  runtime: Локальный изменённый рабочий каталог; production не переключался.
+result: passed
+verifications:
+  - id: ui-tests-and-build
+    command: npm test -- --run src/components/CustomerPriceTypesWorkspace.test.tsx && npm run build
+    exit_code: 0
+    observed_result: Пять UI-тестов прошли; TypeScript и Vite production build завершились успешно.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: backend-tests-and-ruff
+    command: ./.venv/bin/python -m pytest -q tests/test_customer_price_type_api.py tests/test_customer_price_type_bitrix_auth.py && ./.venv/bin/python -m ruff check app/api/customer_price_types.py app/infrastructure/customer_price_types.py tests/test_customer_price_type_api.py
+    exit_code: 0
+    observed_result: Адресные API/auth-тесты прошли; Ruff завершился без замечаний.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: project-docs
+    command: ./.venv/bin/python scripts/validate_project_docs.py pricing-service
+    exit_code: 0
+    observed_result: Проверены 82 документа и 31 spec; delivery evidence прошла.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: diff-check
+    command: git diff --check -- ui/src/components/CustomerPriceTypesWorkspace.tsx ui/src/components/CustomerPriceTypesWorkspace.test.tsx docs/specs/customer-price-type-management-v1.md docs/phases/customer-price-type-search-task-2169-20260912.yml docs/evidence/customer-price-type-search-task-2169-20260912.yml docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+    exit_code: 0
+    observed_result: Ошибок пробелов в файлах этапа не обнаружено.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
