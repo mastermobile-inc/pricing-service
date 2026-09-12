@@ -26,7 +26,8 @@ from app.models import (
     LogisticsUser,
     LogisticsWarehouse,
 )
-from app.services import site_order_fulfillment
+from app.models.logistics import LogisticsDraftAudit
+from app.services import logistics_drivers, site_order_fulfillment
 
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
@@ -220,10 +221,7 @@ def warehouse_ids_in_scope(
 def _get_driver(session: Session, driver_id: int | None) -> LogisticsDriver | None:
     if driver_id is None:
         return None
-    driver = session.get(LogisticsDriver, driver_id)
-    if driver is None or not driver.is_active:
-        raise _http_error(404, "driver not found")
-    return driver
+    return logistics_drivers.require_driver(session, driver_id)
 
 
 def _normalize_source_document_type(value: str | None) -> str:
@@ -540,7 +538,11 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
         _record_unknown_qr(session, code=code)
         raise _http_error(
             404,
-            "QR распознан, но документ ещё не загружен. Повторите через минуту",
+            (
+                "QR распознан, но документ ещё не загружен. Повторите через минуту"
+                if _mm_log_lookup(code) is not None
+                else "Код не распознан. Отсканируйте QR или штрихкод документа"
+            ),
         )
     transfer = rows[0]
     _resolve_unknown_qr_reviews(session, code=code, transfer=transfer)
@@ -829,6 +831,11 @@ def _resolve_handoff_dropoff(
         )
 
     warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
+    current = (
+        transfer.state.current_warehouse_id if transfer.state else transfer.source_warehouse_id
+    )
+    if warehouse_id == current and transfer.target_warehouse_id != current:
+        warehouse_id = transfer.target_warehouse_id
     warehouse = session.get(LogisticsWarehouse, warehouse_id) if warehouse_id is not None else None
     if warehouse is not None and warehouse.is_active:
         return warehouse.id
@@ -1118,7 +1125,7 @@ def add_scan_to_draft(
         )
     )
     if existing is not None:
-        return _serialize_draft(draft)
+        return {**_serialize_draft(draft), "scan_result": "already_scanned"}
 
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
         if state.status != STATUS_AT_WAREHOUSE or state.current_warehouse_id != draft.warehouse_id:
@@ -1131,6 +1138,9 @@ def add_scan_to_draft(
         # The document is the source of truth. Legacy clients may still send
         # dropoff_warehouse_id, but it must never override the 1C direction.
         target_dropoff = _resolve_handoff_dropoff(session, transfer)
+        from app.services.logistics_pending import require_handoff_ready
+
+        require_handoff_ready(session, transfer, draft.warehouse_id)
     else:
         if state.status != STATUS_IN_TRANSIT:
             if (
@@ -1163,7 +1173,7 @@ def add_scan_to_draft(
     )
     session.add(item)
     session.commit()
-    return _serialize_draft(_get_draft(session, draft_id))
+    return {**_serialize_draft(_get_draft(session, draft_id)), "scan_result": "added"}
 
 
 def remove_scan_from_draft(
@@ -1187,6 +1197,41 @@ def remove_scan_from_draft(
     if item is None:
         raise _http_error(404, "draft item not found")
     session.delete(item)
+    session.commit()
+    return _serialize_draft(_get_draft(session, draft_id))
+
+
+def change_draft_driver(
+    session: Session, *, draft_id: int, actor_user_id: int, driver_id: int, source: str = "api"
+) -> dict:
+    draft = _get_draft_for_update(session, draft_id)
+    actor = _get_actor(session, actor_user_id)
+    _require_draft_mutation_access(actor, draft)
+    if draft.status != "open" or draft.draft_type != DRAFT_TYPE_HANDOFF:
+        raise _http_error(409, "Водителя можно менять только в открытом черновике передачи")
+    session.scalar(select(LogisticsDriver).where(LogisticsDriver.id == driver_id).with_for_update())
+    session.expire_all()
+    _get_driver(session, driver_id)
+    if draft.driver_id == driver_id:
+        return _serialize_draft(draft)
+    if draft.route_run_id is not None:
+        run = _get_route_run(session, draft.route_run_id)
+        if run.driver_id not in (None, driver_id):
+            raise _http_error(409, "Водитель не совпадает с водителем закреплённого рейса")
+    session.add(
+        LogisticsDraftAudit(
+            draft_id=draft.id,
+            actor_user_id=actor.id,
+            event_type="driver_changed",
+            details={
+                "previous_driver_id": draft.driver_id,
+                "driver_id": driver_id,
+                "source": source,
+            },
+            created_at=logistics_drivers.now(),
+        )
+    )
+    draft.driver_id = driver_id
     session.commit()
     return _serialize_draft(_get_draft(session, draft_id))
 
@@ -1253,6 +1298,12 @@ def confirm_draft(
         raise _http_error(409, "draft is already closed")
     if not draft.items:
         raise _http_error(422, "draft is empty")
+    if draft.draft_type == DRAFT_TYPE_HANDOFF:
+        session.scalar(
+            select(LogisticsDriver).where(LogisticsDriver.id == draft.driver_id).with_for_update()
+        )
+        session.expire_all()
+        _get_driver(session, draft.driver_id)
     draft = _lock_draft_transfers_for_update(session, draft)
 
     processed_count = 0
@@ -1262,6 +1313,9 @@ def confirm_draft(
         event_key = _bounded_event_key(idempotency_key, transfer.id)
 
         if draft.draft_type == DRAFT_TYPE_HANDOFF:
+            from app.services.logistics_pending import require_handoff_ready
+
+            require_handoff_ready(session, transfer, draft.warehouse_id)
             if (
                 state.status != STATUS_AT_WAREHOUSE
                 or state.current_warehouse_id != draft.warehouse_id
@@ -1799,6 +1853,9 @@ def sync_warehouses(session: Session, items: list[dict]) -> dict:
 
 
 def sync_drivers(session: Session, items: list[dict]) -> dict:
+    logistics_drivers.lock_authority(session)
+    if logistics_drivers.managed(session):
+        raise _http_error(409, "Справочником водителей управляет Bitrix24; старый импорт отключён")
     counters = _SyncCounters()
     for item in items:
         row = None
@@ -2092,16 +2149,18 @@ def list_drivers(session: Session, *, active_only: bool = True) -> list[dict]:
     stmt = select(LogisticsDriver).order_by(LogisticsDriver.full_name.asc())
     if active_only:
         stmt = stmt.where(LogisticsDriver.is_active.is_(True))
-    return [
-        {
-            "id": row.id,
-            "external_id": row.external_id,
-            "full_name": row.full_name,
-            "phone": row.phone,
-            "is_active": row.is_active,
-        }
+    is_managed = active_only and logistics_drivers.managed(session)
+    if is_managed:
+        stmt = stmt.where(LogisticsDriver.bitrix_user_id.is_not(None))
+    rows = [
+        logistics_drivers.serialize(row)
         for row in session.scalars(stmt).all()
+        if not is_managed or logistics_drivers.normalized_position(row.work_position) == "водитель"
     ]
+    rank = {"on_shift": 0, "off_shift": 1, "unknown": 2}
+    return sorted(
+        rows, key=lambda row: (rank[row["shift_status"]], row["full_name"].casefold(), row["id"])
+    )
 
 
 def create_route_run(

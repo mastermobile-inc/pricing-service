@@ -12,7 +12,7 @@ const zxing = vi.hoisted(() => ({
 }));
 
 vi.mock("../api/client", () => ({
-  api: { get: vi.fn(), post: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
 }));
 
 vi.mock("@zxing/browser", () => ({
@@ -128,6 +128,37 @@ describe("LogisticsWorkspace", () => {
         comment: null,
       }, undefined)
     );
+  });
+
+  it("показывает повтор возле сканера и сохраняет документы при ошибке", async () => {
+    const open = { id: 90, draft_type: "handoff", status: "open", warehouse_id: 10,
+      driver_id: 30, item_count: 1, items: [{ id: 7, document_number: "РТУ-90", barcode: "B90", dropoff_warehouse_name: "Магазин" }] };
+    vi.mocked(api.get).mockResolvedValue({ data: { ...bootstrap, open_draft: open } });
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { ...open, scan_result: "already_scanned" } })
+      .mockRejectedValueOnce(new Error("QR распознан, документ ещё не загружен"));
+    render(<LogisticsWorkspace />);
+    const input = await screen.findByPlaceholderText("QR, штрихкод или номер");
+    fireEvent.change(input, { target: { value: "short-QR" } });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
+    expect(await screen.findByText("Документ уже добавлен")).toBeVisible();
+    expect(screen.getAllByText("РТУ-90")).toHaveLength(1);
+    fireEvent.change(input, { target: { value: "unknown-QR" } });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("документ ещё не загружен");
+    expect(screen.getByText("РТУ-90")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
+  });
+
+  it("заменяет недоступного водителя без потери сканов", async () => {
+    const open = { id: 90, draft_type: "handoff", status: "open", warehouse_id: 10,
+      driver_id: 99, item_count: 1, items: [{ id: 7, document_number: "РТУ-90", barcode: "B90" }] };
+    vi.mocked(api.get).mockResolvedValue({ data: { ...bootstrap, open_draft: open } });
+    vi.mocked(api.patch).mockResolvedValueOnce({ data: { ...open, driver_id: 30 } });
+    render(<LogisticsWorkspace />);
+    fireEvent.change(await screen.findByRole("combobox", { name: "Водитель черновика" }), { target: { value: "30" } });
+    expect(await screen.findByText("Водитель заменён. Отсканированные документы сохранены")).toBeVisible();
+    expect(api.patch).toHaveBeenCalledWith("/bitrix/logistics/handoffs/draft/90/driver", { driver_id: 30 }, undefined);
+    expect(screen.getByText("РТУ-90")).toBeVisible();
   });
 
   it("открывает сотруднику онлайн-отдела только единый реестр возвратов", async () => {

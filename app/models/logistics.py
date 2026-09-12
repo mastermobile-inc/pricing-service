@@ -40,6 +40,13 @@ class LogisticsWarehouse(Base):
 class LogisticsDriver(Base):
     __tablename__ = "logistics_driver"
 
+    bitrix_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    work_position: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shift_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shift_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -52,6 +59,21 @@ class LogisticsDriver(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+
+
+class LogisticsSyncStatus(Base):
+    __tablename__ = "logistics_sync_status"
+    source: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    last_success_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class LogisticsDraftAudit(Base):
+    __tablename__ = "logistics_draft_audit"
+    draft_id: Mapped[int] = mapped_column(ForeignKey("logistics_draft.id"), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("logistics_user.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class LogisticsUser(Base):

@@ -638,6 +638,15 @@ class Settings(BaseSettings):
     logistics_web_session_ttl_seconds: int = 8 * 60 * 60
     logistics_web_fallback_token_ttl_seconds: int = 5 * 60
     logistics_bitrix_app_enabled: bool = False
+    logistics_driver_bitrix_sync_enabled: bool = False
+    logistics_driver_bitrix_webhook_url: str | None = None
+    logistics_driver_bitrix_webhook_env_file: str | None = None
+    logistics_pending_documents_enabled: bool = False
+    logistics_sync_freshness_seconds: int = Field(default=180, ge=60)
+    logistics_rtu_sync_success_file: str = (
+        "/var/lib/pricing-service/logistics_rtu_sync.last_success"
+    )
+    logistics_transfer_sync_success_file: str | None = None
     logistics_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
     logistics_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list

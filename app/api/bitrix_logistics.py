@@ -4,6 +4,7 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
@@ -57,14 +58,17 @@ from app.schemas.customer_returns import (
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
+    LogisticsDriverChangeRequest,
     LogisticsExpectedDeliveryResponse,
     LogisticsHistoryEventResponse,
     LogisticsMonitorResponse,
+    LogisticsPendingResponse,
 )
 from app.services import customer_return_deals as customer_return_deal_service
 from app.services import customer_return_service_requests as customer_return_request_service
 from app.services import customer_returns as customer_return_service
 from app.services import logistics as logistics_service
+from app.services import logistics_drivers, logistics_pending
 from app.services.bitrix_logistics_auth import (
     LogisticsBitrixSession,
     create_logistics_bitrix_session_token,
@@ -408,6 +412,13 @@ def bootstrap(
     settings = get_settings()
     if _customer_return_service_links_allowed(actor):
         capabilities = [*capabilities, "customer_return_service_links"]
+    if settings.logistics_pending_documents_enabled and actor.role in {
+        "sender",
+        "receiver",
+        "admin",
+        "logist",
+    }:
+        capabilities = [*capabilities, "pending_documents"]
     warehouses = logistics_service.list_warehouses(
         db,
         allowed_external_ids=settings.logistics_stage_pilot_warehouse_external_ids,
@@ -425,6 +436,45 @@ def bootstrap(
             db,
             actor_user_id=actor.id,
         ),
+        drivers_freshness=logistics_drivers.freshness(db),
+    )
+
+
+@router.patch("/handoffs/draft/{draft_id}/driver", response_model=LogisticsDraftResponse)
+def change_handoff_driver(
+    draft_id: int,
+    payload: LogisticsDriverChangeRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_draft_in_pilot(db, draft_id)
+    return logistics_service.change_draft_driver(
+        db, draft_id=draft_id, actor_user_id=actor.id, driver_id=payload.driver_id, source="bitrix"
+    )
+
+
+@router.get("/pending-documents", response_model=LogisticsPendingResponse)
+def pending_documents(
+    operation: Literal["handoff", "receipt"],
+    warehouse_id: int,
+    draft_id: int | None = None,
+    driver_id: int | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    if not get_settings().logistics_pending_documents_enabled:
+        raise HTTPException(404, "Контроль оставшихся документов отключён")
+    return logistics_pending.pending_documents(
+        db,
+        actor_user_id=actor.id,
+        operation=operation,
+        warehouse_id=warehouse_id,
+        draft_id=draft_id,
+        driver_id=driver_id,
+        limit=limit,
+        offset=offset,
     )
 
 

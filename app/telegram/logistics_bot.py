@@ -17,10 +17,10 @@ from app.models import (
     LogisticsBotSessionPhoto,
     LogisticsDraft,
     LogisticsDraftItem,
-    LogisticsDriver,
     LogisticsWarehouse,
 )
 from app.services import logistics as logistics_service
+from app.services import logistics_drivers, logistics_pending
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,9 @@ HELP_TEXT = """
 /start
 /help
 /handoff <driver_id>
+/drivers
+/driver <driver_id> — заменить водителя, сохранив сканы
+/pending [страница] — оставшиеся документы
 /receive
 /confirm
 /cancel
@@ -47,6 +50,11 @@ HELP_TEXT = """
 """.strip()
 
 REMOVE_SCAN_PAGE_SIZE = 20
+
+
+def _driver_label(row: dict) -> str:
+    shift = {"on_shift": "На смене", "off_shift": "Не на смене", "unknown": "Неизвестно"}
+    return f"{row['full_name']} — {shift.get(row.get('shift_status'), 'Неизвестно')}"
 
 
 class TelegramApiError(RuntimeError):
@@ -728,12 +736,74 @@ class LogisticsTelegramBot:
             )
 
         if command == "/drivers":
-            drivers = session.scalars(
-                select(LogisticsDriver).where(LogisticsDriver.is_active.is_(True))
-            ).all()
+            drivers = logistics_service.list_drivers(session)
             if not drivers:
                 return "Список водителей пуст."
-            return "Водители:\n" + "\n".join(f"{row.id}: {row.full_name}" for row in drivers)
+            warning = (
+                "\nСписок давно не обновлялся."
+                if logistics_drivers.freshness(session)["stale"]
+                else ""
+            )
+            return (
+                "Водители:\n"
+                + "\n".join(f"{row['id']}: {_driver_label(row)}" for row in drivers)
+                + warning
+            )
+
+        if command == "/driver":
+            current = self._get_session(session, chat_id)
+            if current is None or len(parts) != 2 or not parts[1].isdecimal():
+                return "В открытом черновике передачи: /driver <driver_id>. Список: /drivers"
+            logistics_service.change_draft_driver(
+                session,
+                draft_id=current.draft_id,
+                actor_user_id=profile["id"],
+                driver_id=int(parts[1]),
+                source="telegram",
+            )
+            return self._render_draft_status(
+                session,
+                profile,
+                chat_id,
+                headline="Водитель заменён. Документы сохранены. Смена предупреждает, но не блокирует передачу.",
+            )
+
+        if command == "/pending":
+            if not get_settings().logistics_pending_documents_enabled:
+                return "Контроль оставшихся документов пока выключен."
+            if len(parts) > 2 or (len(parts) == 2 and not parts[1].isdecimal()):
+                return "Использование: /pending [страница]"
+            draft = self._get_single_open_draft_for_actor(session, profile["id"])
+            operation = (
+                draft.draft_type
+                if draft
+                else ("handoff" if profile["role"] == "sender" else "receipt")
+            )
+            warehouse = draft.warehouse_id if draft else profile.get("default_warehouse_id")
+            if not warehouse:
+                return "Сначала выберите склад в приложении Bitrix24."
+            page = max(1, int(parts[1])) if len(parts) == 2 else 1
+            data = logistics_pending.pending_documents(
+                session,
+                actor_user_id=profile["id"],
+                operation=operation,
+                warehouse_id=warehouse,
+                draft_id=draft.id if draft else None,
+                limit=20,
+                offset=(page - 1) * 20,
+            )
+            lines = [
+                f"Всего: {data['total']}. В черновике: {data['scanned_count']}. Осталось: {data['remaining_count']}."
+            ]
+            for row in data["items"]:
+                mark = "в черновике" if row["in_draft"] else "ожидает сканирования"
+                lines.append(f"{row['document_number']} → {row['dropoff_warehouse_name']}: {mark}")
+            if any(row["stale"] for row in data["freshness"].values()):
+                lines.append("Синхронизация не подтверждена: список может быть неполным.")
+            lines.append("Частичное подтверждение разрешено. Остаток не означает потерю груза.")
+            if page * 20 < data["total"]:
+                lines.append(f"Далее: /pending {page + 1}")
+            return "\n".join(lines)
 
         if command == "/warehouses":
             warehouses = session.scalars(
@@ -892,14 +962,18 @@ class LogisticsTelegramBot:
             return "Приёмка доступна только получателю.", _main_menu(profile)
 
         if data == "menu:handoff":
-            drivers = session.scalars(
-                select(LogisticsDriver).where(LogisticsDriver.is_active.is_(True))
-            ).all()
+            drivers = logistics_service.list_drivers(session)
             if not drivers:
                 return "Список водителей пуст.", _main_menu(profile)
-            rows = [[(driver.full_name, f"handoff_driver:{driver.id}")] for driver in drivers[:20]]
+            rows = [
+                [(_driver_label(driver), f"handoff_driver:{driver['id']}")]
+                for driver in drivers[:20]
+            ]
             rows.append([("⬅️ Назад", "menu:main")])
-            return "📦 Выберите водителя:", _inline_keyboard(rows)
+            return (
+                "📦 Выберите водителя. Смена предупреждает, но не блокирует передачу. Полный список: /drivers; замена: /driver <ID>.",
+                _inline_keyboard(rows),
+            )
 
         if data.startswith("handoff_driver:") or data.startswith("handoff_dropoff:"):
             # handoff_dropoff remains accepted for buttons sent by older bot versions;
@@ -1110,13 +1184,8 @@ class LogisticsTelegramBot:
             return self._format_monitor(rows), _main_menu(profile)
 
         if data == "menu:drivers":
-            drivers = session.scalars(
-                select(LogisticsDriver).where(LogisticsDriver.is_active.is_(True))
-            ).all()
-            if not drivers:
-                return "Список водителей пуст.", _main_menu(profile)
             return (
-                "👤 Водители:\n" + "\n".join(f"{row.id}: {row.full_name}" for row in drivers),
+                self._handle_command(session, profile, chat_id, "/drivers"),
                 _main_menu(profile),
             )
 
@@ -1169,7 +1238,11 @@ class LogisticsTelegramBot:
             session,
             profile,
             chat_id,
-            headline=f"✅ Штрихкод принят. Черновик #{payload['id']}.",
+            headline=(
+                "✅ Документ уже добавлен."
+                if payload.get("scan_result") == "already_scanned"
+                else f"✅ Штрихкод принят. Черновик #{payload['id']}."
+            ),
         )
 
 

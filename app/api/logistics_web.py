@@ -6,9 +6,9 @@ import hmac
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -20,11 +20,14 @@ from app.models import LogisticsDraft, LogisticsUser
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
+    LogisticsDriverChangeRequest,
     LogisticsMonitorResponse,
+    LogisticsPendingResponse,
     LogisticsPhotoInput,
     LogisticsUserProfile,
 )
 from app.services import logistics as logistics_service
+from app.services import logistics_drivers, logistics_pending
 
 router = APIRouter()
 page_router = APIRouter()
@@ -237,9 +240,64 @@ def create_web_session(
     return _profile(user)
 
 
-@router.get("/profile", response_model=LogisticsUserProfile)
-def web_profile(actor: LogisticsUser = Depends(require_logistics_web_actor)):
-    return _profile(actor)
+class LogisticsWebProfile(LogisticsUserProfile):
+    pending_documents_enabled: bool = False
+    drivers_freshness: dict = Field(default_factory=dict)
+
+
+@router.get("/profile", response_model=LogisticsWebProfile)
+def web_profile(
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+    db: Session = Depends(get_db),
+):
+    return {
+        **_profile(actor),
+        "pending_documents_enabled": get_settings().logistics_pending_documents_enabled,
+        "drivers_freshness": logistics_drivers.freshness(db),
+    }
+
+
+@router.get("/pending-documents", response_model=LogisticsPendingResponse)
+def web_pending_documents(
+    operation: Literal["handoff", "receipt"],
+    warehouse_id: int,
+    draft_id: int | None = None,
+    driver_id: int | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+    db: Session = Depends(get_db),
+):
+    if not get_settings().logistics_pending_documents_enabled:
+        raise HTTPException(404, "Контроль оставшихся документов выключен")
+    return logistics_pending.pending_documents(
+        db,
+        actor_user_id=actor.id,
+        operation=operation,
+        warehouse_id=warehouse_id,
+        draft_id=draft_id,
+        driver_id=driver_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.patch("/handoffs/draft/{draft_id}/driver", response_model=LogisticsDraftResponse)
+def web_change_driver(
+    draft_id: int,
+    payload: LogisticsDriverChangeRequest,
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+    db: Session = Depends(get_db),
+):
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_web_draft_in_pilot(db, draft_id)
+    return logistics_service.change_draft_driver(
+        db,
+        draft_id=draft_id,
+        actor_user_id=actor.id,
+        driver_id=payload.driver_id,
+        source="web_fallback",
+    )
 
 
 @router.get("/warehouses")
