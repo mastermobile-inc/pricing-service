@@ -640,8 +640,9 @@ def test_internal_api_cannot_enable_apply_through_query_parameter(monkeypatch) -
         def rollback(self) -> None:
             return None
 
-    def fake_lease_commands(_db, *, limit: int, allow_apply: bool):
+    def fake_lease_commands(_db, *, limit: int, allow_apply: bool, allow_auto_apply: bool):
         assert limit == 1
+        assert allow_auto_apply is False
         leased_with_apply.append(allow_apply)
         return []
 
@@ -651,6 +652,7 @@ def test_internal_api_cannot_enable_apply_through_query_parameter(monkeypatch) -
     response = order_closure_api.commands(
         limit=1,
         allow_apply=True,
+        allow_auto_apply=False,
         _token="internal-test-token",
         db=FakeDb(),
     )

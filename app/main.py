@@ -49,6 +49,7 @@ from app.api.order_fulfillment import router as order_fulfillment_router
 from app.api.order_fulfillment_bot import internal_router as order_fulfillment_bot_internal_router
 from app.api.order_fulfillment_bot import router as order_fulfillment_bot_router
 from app.api.order_payment_control import router as order_payment_control_router
+from app.api.order_prepay_expiry import router as order_prepay_expiry_router
 from app.api.procurement_assortment_decisions import (
     page_router as procurement_assortment_page_router,
 )
@@ -233,6 +234,7 @@ app.include_router(
 )
 app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
 app.include_router(order_closure_router)
+app.include_router(order_prepay_expiry_router)
 app.include_router(orchestration_router)
 app.include_router(sms_journal_router)
 app.include_router(procurement_labels_router, prefix="/api")

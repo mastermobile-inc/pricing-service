@@ -10820,6 +10820,13 @@ paths:
           type: boolean
           default: false
           title: Allow Apply
+      - name: allow_auto_apply
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Allow Auto Apply
       responses:
         '200':
           description: Successful Response
@@ -10857,6 +10864,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderClosureCommandAckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/prepay72/work:
+    get:
+      tags:
+      - order-closures
+      summary: Work
+      operationId: work_api_order_closures_prepay72_work_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepayWorkResponse'
+      security:
+      - HTTPBearer: []
+  /api/order-closures/prepay72/tick:
+    post:
+      tags:
+      - order-closures
+      summary: Tick
+      operationId: tick_api_order_closures_prepay72_tick_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepayTickRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepayWorkResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/order-closures/prepay72/known:
+    get:
+      tags:
+      - order-closures
+      summary: Known
+      operationId: known_api_order_closures_prepay72_known_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepayKnownResponse'
         '422':
           description: Validation Error
           content:
@@ -28137,6 +28216,105 @@ components:
       - page_size
       - total
       title: PaginatedProducts
+    PrepayKnownResponse:
+      properties:
+        site_order_ids:
+          items:
+            type: string
+          type: array
+          title: Site Order Ids
+        next_cursor:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - site_order_ids
+      title: PrepayKnownResponse
+    PrepayTickRequest:
+      properties:
+        snapshots:
+          items:
+            $ref: '#/components/schemas/SitePrepaySnapshot'
+          type: array
+          maxItems: 20
+          title: Snapshots
+      type: object
+      required:
+      - snapshots
+      title: PrepayTickRequest
+    PrepayWorkItem:
+      properties:
+        batch_id:
+          type: string
+          title: Batch Id
+        site_order_id:
+          type: string
+          title: Site Order Id
+        action:
+          type: string
+          enum:
+          - refresh
+          - cancel_site
+          - manual_review
+          - complete
+          title: Action
+        closure_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closure Document Ref
+        closure_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Closure Document Number
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        expected_created_at:
+          type: string
+          format: date-time
+          title: Expected Created At
+        expected_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Expected Amount
+        payment_system_id:
+          type: integer
+          title: Payment System Id
+      type: object
+      required:
+      - batch_id
+      - site_order_id
+      - action
+      - expected_created_at
+      - expected_amount
+      - payment_system_id
+      title: PrepayWorkItem
+    PrepayWorkResponse:
+      properties:
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+        apply_enabled:
+          type: boolean
+          title: Apply Enabled
+        items:
+          items:
+            $ref: '#/components/schemas/PrepayWorkItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - checked_at
+      - apply_enabled
+      - items
+      title: PrepayWorkResponse
     PriceChangeItem:
       properties:
         article:
@@ -35706,6 +35884,96 @@ components:
           title: Orders
       type: object
       title: SiteOrderStateBatchRequest
+    SitePrepaySnapshot:
+      properties:
+        site_order_id:
+          type: string
+          pattern: ^[1-9][0-9]{0,11}$
+          title: Site Order Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        amount:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,16}|(?=[\d.]{1,19}0*$)\d{0,16}\.\d{0,2}0*$)
+          title: Amount
+        currency:
+          type: string
+          const: RUB
+          title: Currency
+        payment_system_id:
+          type: integer
+          title: Payment System Id
+        payment_row_system_id:
+          type: integer
+          title: Payment Row System Id
+        payment_row_count:
+          type: integer
+          minimum: 0.0
+          title: Payment Row Count
+        payment_row_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,16}|(?=[\d.]{1,19}0*$)\d{0,16}\.\d{0,2}0*$)
+          title: Payment Row Amount
+        paid_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,16}|(?=[\d.]{1,19}0*$)\d{0,16}\.\d{0,2}0*$)
+          title: Paid Amount
+        has_payment_history:
+          type: boolean
+          title: Has Payment History
+        has_shipment_history:
+          type: boolean
+          title: Has Shipment History
+        marked:
+          type: boolean
+          title: Marked
+        delivery_allowed:
+          type: boolean
+          title: Delivery Allowed
+        canceled:
+          type: boolean
+          title: Canceled
+        status:
+          type: string
+          maxLength: 8
+          minLength: 1
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - site_order_id
+      - created_at
+      - observed_at
+      - amount
+      - currency
+      - payment_system_id
+      - payment_row_system_id
+      - payment_row_count
+      - payment_row_amount
+      - paid_amount
+      - has_payment_history
+      - has_shipment_history
+      - marked
+      - delivery_allowed
+      - canceled
+      - status
+      title: SitePrepaySnapshot
+      description: Facts supplied only by the authenticated native site collector.
     SiteServiceEmailEventPayload:
       properties:
         schemaVersion:
