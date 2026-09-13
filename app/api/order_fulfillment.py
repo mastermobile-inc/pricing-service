@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
 from sqlalchemy.orm import Session
@@ -18,11 +18,45 @@ from app.schemas.order_fulfillment import (
     OrderFulfillmentRecommendationsResponse,
     OrderFulfillmentReviewResponse,
 )
+from app.schemas.order_fulfillment_quote import FulfillmentQuoteRequest, FulfillmentQuoteResponse
 from app.services import order_assembly_outbox as assembly_outbox
 from app.services import order_assembly_queue as assembly_queue
 from app.services import site_order_fulfillment as fulfillment
+from app.services.order_fulfillment_quote import QuoteUnavailable, calculate_quote, load_test_inputs
 
 router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+
+
+@router.post(
+    "/quote",
+    response_model=FulfillmentQuoteResponse,
+    responses={
+        409: {"description": "Selected quantities, stock identity or route cannot be fulfilled"},
+        503: {"description": "Quote disabled, test configuration invalid or inventory not fresh"},
+    },
+)
+def quote_order_fulfillment(payload: FulfillmentQuoteRequest) -> FulfillmentQuoteResponse:
+    settings = get_settings()
+    if settings.order_fulfillment_quote_mode != "test_fixture" or settings.environment not in {
+        "test",
+        "development",
+    }:
+        raise HTTPException(status_code=503, detail="fulfillment_quote_disabled")
+    if (
+        not settings.order_fulfillment_quote_profile_path
+        or not settings.order_fulfillment_quote_inventory_path
+    ):
+        raise HTTPException(status_code=503, detail="test_configuration_missing")
+    try:
+        profile, inventory = load_test_inputs(
+            settings.order_fulfillment_quote_profile_path,
+            settings.order_fulfillment_quote_inventory_path,
+        )
+        return calculate_quote(payload, profile, inventory, now=datetime.now(timezone.utc))
+    except QuoteUnavailable as exc:
+        code = str(exc)
+        status = 503 if code in {"test_configuration_invalid", "inventory_not_fresh"} else 409
+        raise HTTPException(status_code=status, detail=code) from exc
 
 
 @router.get(

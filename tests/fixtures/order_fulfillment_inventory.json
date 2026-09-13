@@ -1,0 +1,127 @@
+{
+  "provenance": "synthetic_fixture",
+  "observed_at": "2026-09-13T09:00:00+03:00",
+  "central_warehouse_id": "demo-central",
+  "warehouses": [
+    {
+      "warehouse_id": "demo-central",
+      "name": "Центральный (тест)",
+      "city": "moscow",
+      "active": true,
+      "technical": false,
+      "pickup_point_id": "demo-pickup-central"
+    },
+    {
+      "warehouse_id": "demo-mitino",
+      "name": "Митино (тест)",
+      "city": "moscow",
+      "active": true,
+      "technical": false,
+      "pickup_point_id": "demo-pickup-mitino"
+    },
+    {
+      "warehouse_id": "demo-sadovaya",
+      "name": "Садовая (тест)",
+      "city": "spb",
+      "active": true,
+      "technical": false,
+      "pickup_point_id": "demo-pickup-sadovaya"
+    },
+    {
+      "warehouse_id": "demo-grand",
+      "name": "Гранд Юг (тест)",
+      "city": "spb",
+      "active": true,
+      "technical": false,
+      "pickup_point_id": "demo-pickup-grand"
+    },
+    {
+      "warehouse_id": "demo-pyatigorsk",
+      "name": "Пятигорск (тест)",
+      "city": "pyatigorsk",
+      "active": true,
+      "technical": false,
+      "pickup_point_id": "demo-pickup-pyatigorsk"
+    },
+    {
+      "warehouse_id": "demo-transit",
+      "name": "Технический транзит (не показывать)",
+      "city": "moscow",
+      "technical": true,
+      "active": true,
+      "pickup_point_id": null
+    }
+  ],
+  "stock": [
+    {
+      "product_id": "demo-display",
+      "warehouse_id": "demo-central",
+      "free_quantity": "1",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-battery",
+      "warehouse_id": "demo-central",
+      "free_quantity": "2",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-display",
+      "warehouse_id": "demo-mitino",
+      "free_quantity": "3",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-battery",
+      "warehouse_id": "demo-mitino",
+      "free_quantity": "2",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-display",
+      "warehouse_id": "demo-sadovaya",
+      "free_quantity": "1",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-battery",
+      "warehouse_id": "demo-sadovaya",
+      "free_quantity": "2",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-display",
+      "warehouse_id": "demo-grand",
+      "free_quantity": "3",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-battery",
+      "warehouse_id": "demo-grand",
+      "free_quantity": "2",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-display",
+      "warehouse_id": "demo-pyatigorsk",
+      "free_quantity": "3",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    },
+    {
+      "product_id": "demo-battery",
+      "warehouse_id": "demo-pyatigorsk",
+      "free_quantity": "0",
+      "quantity_step": "1",
+      "unit_id": "piece"
+    }
+  ]
+}

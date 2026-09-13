@@ -237,6 +237,10 @@ class Settings(BaseSettings):
     card_balance_ocr_timeout_seconds: float = 60.0
     card_balance_ocr_max_image_bytes: int = 10 * 1024 * 1024
     order_fulfillment_internal_api_token: str | None = None
+    # Test quote only. No live inventory/reservation adapter is enabled by this flag.
+    order_fulfillment_quote_mode: str = "disabled"
+    order_fulfillment_quote_profile_path: str | None = None
+    order_fulfillment_quote_inventory_path: str | None = None
     order_payment_control_internal_api_token: str | None = None
     order_payment_control_require_posted: bool = False
     order_payment_control_closure_blocks_payment: bool = True

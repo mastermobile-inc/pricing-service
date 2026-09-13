@@ -8658,6 +8658,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/quote:
+    post:
+      summary: Quote Order Fulfillment
+      operationId: quote_order_fulfillment_api_order_fulfillment_quote_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FulfillmentQuoteRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FulfillmentQuoteResponse'
+        '409':
+          description: Selected quantities, stock identity or route cannot be fulfilled
+        '503':
+          description: Quote disabled, test configuration invalid or inventory not fresh
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/assembly-queue:
     get:
       summary: Get Assembly Queue
@@ -21437,6 +21466,136 @@ components:
       - created
       - updated
       title: ExpertiseSyncResponse
+    FulfillmentQuoteRequest:
+      properties:
+        delivery_method:
+          type: string
+          enum:
+          - pickup
+          - cdek
+          - russian_post
+          - yandex_delivery
+          title: Delivery Method
+        pickup_point_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Pickup Point Id
+        lines:
+          items:
+            $ref: '#/components/schemas/QuoteLine'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Lines
+      additionalProperties: false
+      type: object
+      required:
+      - delivery_method
+      - lines
+      title: FulfillmentQuoteRequest
+    FulfillmentQuoteResponse:
+      properties:
+        contract_version:
+          type: string
+          const: fulfillment_quote_v1
+          title: Contract Version
+          default: fulfillment_quote_v1
+        quote_id:
+          type: string
+          title: Quote Id
+        quoted_at:
+          type: string
+          format: date-time
+          title: Quoted At
+        payment_condition_until:
+          type: string
+          format: date-time
+          title: Payment Condition Until
+        ready_at:
+          type: string
+          format: date-time
+          title: Ready At
+        carrier_handoff_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Carrier Handoff At
+        carrier_delivery_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Carrier Delivery At
+        consolidation_warehouse_id:
+          type: string
+          title: Consolidation Warehouse Id
+        consolidation_warehouse_name:
+          type: string
+          title: Consolidation Warehouse Name
+        delivery_method:
+          type: string
+          enum:
+          - pickup
+          - cdek
+          - russian_post
+          - yandex_delivery
+          title: Delivery Method
+        lines:
+          items:
+            $ref: '#/components/schemas/QuotedLine'
+          type: array
+          title: Lines
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        test_only:
+          type: boolean
+          const: true
+          title: Test Only
+          default: true
+        inventory_provenance:
+          type: string
+          const: synthetic_fixture
+          title: Inventory Provenance
+          default: synthetic_fixture
+        display_label:
+          type: string
+          title: Display Label
+        reservation_created:
+          type: boolean
+          const: false
+          title: Reservation Created
+          default: false
+        payment_allowed:
+          type: boolean
+          const: false
+          title: Payment Allowed
+          default: false
+        production_eligible:
+          type: boolean
+          const: false
+          title: Production Eligible
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - quote_id
+      - quoted_at
+      - payment_condition_until
+      - ready_at
+      - consolidation_warehouse_id
+      - consolidation_warehouse_name
+      - delivery_method
+      - lines
+      - warnings
+      - display_label
+      title: FulfillmentQuoteResponse
     HTTPValidationError:
       properties:
         detail:
@@ -28407,6 +28566,197 @@ components:
       - count
       - sample_competitor_item_id
       title: PropertyValueSuggestion
+    QuoteLeg:
+      properties:
+        source_warehouse_id:
+          type: string
+          title: Source Warehouse Id
+        target_warehouse_id:
+          type: string
+          title: Target Warehouse Id
+        departure_at:
+          type: string
+          format: date-time
+          title: Departure At
+        received_at:
+          type: string
+          format: date-time
+          title: Received At
+      additionalProperties: false
+      type: object
+      required:
+      - source_warehouse_id
+      - target_warehouse_id
+      - departure_at
+      - received_at
+      title: QuoteLeg
+    QuoteLine:
+      properties:
+        product_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Product Id
+        characteristic_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Characteristic Id
+        series_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Series Id
+        unit_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Unit Id
+          default: piece
+        line_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Line Id
+        quantity:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,19}0*$)\d{0,12}\.\d{0,6}0*$)
+          title: Quantity
+        sources:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SourceAllocation'
+            type: array
+            maxItems: 50
+            minItems: 1
+          - type: 'null'
+          title: Sources
+      additionalProperties: false
+      type: object
+      required:
+      - product_id
+      - line_id
+      - quantity
+      title: QuoteLine
+    QuoteOption:
+      properties:
+        warehouse_id:
+          type: string
+          title: Warehouse Id
+        warehouse_name:
+          type: string
+          title: Warehouse Name
+        available_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Available Quantity
+        needs_transfer:
+          type: boolean
+          title: Needs Transfer
+        intercity:
+          type: boolean
+          title: Intercity
+      additionalProperties: false
+      type: object
+      required:
+      - warehouse_id
+      - warehouse_name
+      - available_quantity
+      - needs_transfer
+      - intercity
+      title: QuoteOption
+    QuotedAllocation:
+      properties:
+        warehouse_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Warehouse Id
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,19}0*$)\d{0,12}\.\d{0,6}0*$)
+          title: Quantity
+        warehouse_name:
+          type: string
+          title: Warehouse Name
+        ready_at:
+          type: string
+          format: date-time
+          title: Ready At
+        legs:
+          items:
+            $ref: '#/components/schemas/QuoteLeg'
+          type: array
+          title: Legs
+      additionalProperties: false
+      type: object
+      required:
+      - warehouse_id
+      - quantity
+      - warehouse_name
+      - ready_at
+      - legs
+      title: QuotedAllocation
+    QuotedLine:
+      properties:
+        product_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Product Id
+        characteristic_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Characteristic Id
+        series_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Series Id
+        unit_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Unit Id
+          default: piece
+        line_id:
+          type: string
+          title: Line Id
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        sources:
+          items:
+            $ref: '#/components/schemas/QuotedAllocation'
+          type: array
+          title: Sources
+        options:
+          items:
+            $ref: '#/components/schemas/QuoteOption'
+          type: array
+          title: Options
+      additionalProperties: false
+      type: object
+      required:
+      - product_id
+      - line_id
+      - quantity
+      - sources
+      - options
+      title: QuotedLine
     ReceivableCaseItem:
       properties:
         snapshot_date:
@@ -31533,6 +31883,26 @@ components:
       required:
       - send_status
       title: SmsSendResultRequest
+    SourceAllocation:
+      properties:
+        warehouse_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Warehouse Id
+        quantity:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,19}0*$)\d{0,12}\.\d{0,6}0*$)
+          title: Quantity
+      additionalProperties: false
+      type: object
+      required:
+      - warehouse_id
+      - quantity
+      title: SourceAllocation
     StaffingDailyItem:
       properties:
         snapshot_date:
