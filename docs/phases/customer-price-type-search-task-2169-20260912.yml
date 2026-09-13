@@ -1,0 +1,46 @@
+version: 1
+record_type: phase
+phase_id: customer-price-type-search-task-2169-20260912
+spec: docs/specs/customer-price-type-management-v1.md
+objective: Подготовить и проверить исправление поиска клиента вне рабочих очередей по задаче №2169 без изменения production.
+risk: high
+scope:
+  - Единый поиск по разрешённому портфелю на главном экране типов цен.
+  - Понятное состояние клиента, находящегося вне рабочих очередей руководителя.
+  - Явное пояснение, что верхние счётчики не являются фильтрами.
+  - Адресные UI/API-тесты, сборка интерфейса и проверка документации.
+non_goals:
+  - Production-деплой и переключение активного релиза.
+  - Публикация ответа в чат задачи №2169.
+  - Расширение доступа руководителя к технической очереди data_check.
+  - Изменение типа цены или иных данных в 1С.
+dependencies: []
+allowed_paths:
+  - ui/src/components/CustomerPriceTypesWorkspace.tsx
+  - ui/src/components/CustomerPriceTypesWorkspace.test.tsx
+  - docs/specs/customer-price-type-management-v1.md
+  - docs/phases/customer-price-type-search-task-2169-20260912.yml
+  - docs/evidence/customer-price-type-search-task-2169-20260912.yml
+  - docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+approval:
+  status: approved
+  approved_by: пользователь текущего диалога
+  approved_at: "2026-09-12T21:26:42+03:00"
+  source: >-
+    Команда «исправляй» после согласования порядка: сначала устранить дефекты
+    поиска и проверить результат, затем отдельно публиковать ответ Арсену.
+verification:
+  - id: ui-tests-and-build
+    command: npm test -- --run src/components/CustomerPriceTypesWorkspace.test.tsx && npm run build
+    expected_result: Пять адресных UI-тестов проходят, production-сборка интерфейса завершается с кодом 0.
+  - id: backend-tests-and-ruff
+    command: ./.venv/bin/python -m pytest -q tests/test_customer_price_type_api.py tests/test_customer_price_type_bitrix_auth.py && ./.venv/bin/python -m ruff check app/api/customer_price_types.py app/infrastructure/customer_price_types.py tests/test_customer_price_type_api.py
+    expected_result: Адресные API/auth-тесты и Ruff завершаются с кодом 0.
+  - id: project-docs
+    command: ./.venv/bin/python scripts/validate_project_docs.py pricing-service
+    expected_result: Проверка документации pricing-service завершается с кодом 0.
+  - id: diff-check
+    command: git diff --check -- ui/src/components/CustomerPriceTypesWorkspace.tsx ui/src/components/CustomerPriceTypesWorkspace.test.tsx docs/specs/customer-price-type-management-v1.md docs/phases/customer-price-type-search-task-2169-20260912.yml docs/evidence/customer-price-type-search-task-2169-20260912.yml docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+    expected_result: Git не обнаруживает ошибок пробелов в изменённых файлах этапа.
+stop_condition: Не выполнять production-деплой и не публиковать ответ в Bitrix без отдельной явной команды после зелёных локальных проверок.
+status: completed
