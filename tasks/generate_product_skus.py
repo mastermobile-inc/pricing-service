@@ -22,6 +22,7 @@ from app.services.exporters.ut103_nomenclature_properties import (
     write_nomenclature_property_updates_message,
 )
 from app.services.sku import generate_sku_batch
+from tasks.normalize_product_subject import normalize_subjects
 
 DEFAULT_SKU_PROPERTY_NAME = "SKU"
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
@@ -32,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         description="Generate planned SKU for products from DB attributes."
     )
     parser.add_argument("--write", action="store_true", help="Persist planned SKU values to DB.")
+    parser.add_argument(
+        "--normalize-subjects",
+        action="store_true",
+        help=("Persist missing generated subjects before SKU generation. " "Requires --write."),
+    )
     parser.add_argument(
         "--all",
         action="store_true",
@@ -95,6 +101,11 @@ def main() -> None:
 
     engine = build_engine(db_url)
     with Session(engine) as session:
+        subject_normalization = None
+        if args.normalize_subjects:
+            if not args.write:
+                raise SystemExit("--normalize-subjects requires --write")
+            subject_normalization = _normalize_subjects_before_sku(session)
         result = generate_sku_batch(
             session,
             product_ids=args.product_ids,
@@ -112,6 +123,8 @@ def main() -> None:
             if args.export_existing
             else []
         )
+    if subject_normalization is not None:
+        result["subject_normalization"] = subject_normalization
     export_items = [*result["items"], *existing_items]
     result["existing_sku_export_items"] = len(existing_items)
     result["ut103_export_candidates"] = len(export_items)
@@ -155,6 +168,32 @@ def main() -> None:
 
     result["ut103_property_path"] = str(output_path) if output_path else None
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+def _normalize_subjects_before_sku(session: Session) -> dict[str, int]:
+    """Persist rule-based classification so the same run can use it for SKU."""
+
+    return normalize_subjects(
+        session,
+        name_contains=None,
+        name_not_startswith=None,
+        subject_in=None,
+        missing_only=True,
+        overwrite=False,
+        limit=None,
+        use_llm=False,
+        llm_limit=0,
+        llm_only=False,
+        force_llm=False,
+        default_category=None,
+        treat_unknown_as_missing=True,
+        unknown_values=None,
+        chunk_size=500,
+        min_id=None,
+        max_id=None,
+        active_only=True,
+        not_deleted_only=True,
+    )
 
 
 def _load_database_env_file(env_file: str | Path | None = None) -> None:
