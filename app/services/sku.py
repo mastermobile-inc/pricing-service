@@ -617,6 +617,10 @@ def _length_fallback_key_codes(category_code: str, key_code: str) -> list[str]:
             variants.append("-".join(["BCV", *parts[1:]]))
         if parts and parts[0] == "HOUS":
             variants.append("-".join(["HOU", *parts[1:]]))
+            without_assembly = [part for part in parts if part != "ASM"]
+            if without_assembly != parts:
+                variants.append("-".join(without_assembly))
+                variants.append("-".join(["HOU", *without_assembly[1:]]))
         if parts and parts[0] == "SIMTRAY":
             variants.append("-".join(["SIMTR", *parts[1:]]))
 
@@ -726,6 +730,10 @@ def infer_category_code(product: Product) -> str | None:
         return "TST"
     if lower_name.startswith("матрица") or lower_subject == "матрица":
         return "DSP"
+    if lower_name.startswith(("защитное стекло", "стекло модуля", "стекло задней камеры")):
+        return "GLS"
+    if lower_name.startswith("материнская плата"):
+        return "IC"
     if (
         lower_name.startswith(("вентилятор", "кулер"))
         or "вентилятор" in lower_name
@@ -1034,6 +1042,8 @@ def _apple_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\biphone\s*17\s*pro\b", "IPH17P"),
         (r"\biphone\s*17\s*air\b", "IPH17AIR"),
         (r"\biphone\s*17\b", "IPH17"),
+        (r"\biphone\s+air\b", "IPHAIR"),
+        (r"\biphone\s+duo\b", "IPHDUO"),
         (r"\biphone\s*(\d+)\s*pro\s*max\b", lambda m: f"IPH{m.group(1)}PM"),
         (r"\biphone\s*(\d+)\s*pro\b", lambda m: f"IPH{m.group(1)}P"),
         (r"\biphone\s*(\d+)\s*plus\b", lambda m: f"IPH{m.group(1)}PL"),
@@ -1069,6 +1079,7 @@ def _apple_device_suffix(model_value: str, variant: str | None) -> str | None:
             r"\bmacbook\s+pro(?:\s+retina|\s+touch\s+bar)?\s*(13|14|15|16|17).*\b(a\d{4})\b",
             lambda m: f"MBP{m.group(1)}{m.group(2).upper()}",
         ),
+        (r"\bmacbook\s+air\s*15\b.*\bm2\b.*\bm3\b.*\bm4\b", "MBA15M234"),
         (r"\bmacbook\s+air\s*13\.?6\b", "MBA136"),
         (r"\bmacbook\s+air\s*15\.?3\b", "MBA153"),
         (r"\bmacbook\s+neo\s*13\b.*\b(a3404)\b", "MBN13"),
@@ -1309,6 +1320,7 @@ def _xiaomi_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\bpoco\s+m(\d+)\s*pro\s*5g\b", lambda m: f"PM{m.group(1)}P5"),
         (r"\bpoco\s+m(\d+)\s*pro\s*4g\b", lambda m: f"PM{m.group(1)}P4"),
         (r"\bpoco\s+m(\d+)\s*pro\b", lambda m: f"PM{m.group(1)}P"),
+        (r"\bpoco\s+m(\d+)\s*plus\b", lambda m: f"PM{m.group(1)}PL"),
         (r"\bpoco\s+m(\d+)s\b", lambda m: f"PM{m.group(1)}S"),
         (r"\bpoco\s+m(\d+)\s*5g\b", lambda m: f"PM{m.group(1)}5"),
         (r"\bpoco\s+m(\d+)\b", lambda m: f"PM{m.group(1)}"),
@@ -1360,6 +1372,8 @@ def _xiaomi_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\bmi\s+(\d+)\s*i\b", lambda m: f"{m.group(1)}I"),
         (r"\bmi\s+(\d+)\b", lambda m: f"{m.group(1)}"),
         (r"\bxiaomi\s+13\b.*\bxiaomi\s+14\b", "1314"),
+        (r"\bxiaomi\s+(\d+)\s*pro\b", lambda m: f"{m.group(1)}P"),
+        (r"\bxiaomi\s+(\d+)\s*plus\b", lambda m: f"{m.group(1)}PL"),
         (r"\bxiaomi\s+(\d+)\b", lambda m: f"{m.group(1)}"),
         (r"\b(\d+)\s*ultra\b", lambda m: f"{m.group(1)}U"),
         (r"\b(\d+)\s*s\s*ultra\b", lambda m: f"{m.group(1)}SU"),
@@ -1476,6 +1490,9 @@ def _huawei_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\bmate\s*(\d+)\s*pro\b", lambda m: f"M{m.group(1)}P"),
         (r"\bmate\s*(\d+)\b", lambda m: f"M{m.group(1)}"),
         (r"\bp(\d+)\s*pocket\b", lambda m: f"P{m.group(1)}PK"),
+        (r"\bpura\s*(\d+)s\s*pro\s*max\b", lambda m: f"P{m.group(1)}SPM"),
+        (r"\bpura\s*(\d+)s\s*pro\b", lambda m: f"P{m.group(1)}SP"),
+        (r"\bpura\s*(\d+)s\b", lambda m: f"P{m.group(1)}S"),
         (r"\bpura\s*(\d+)\s*ultra\b", lambda m: f"{m.group(1)}U"),
         (r"\bpura\s*(\d+)\s*pro\+\b", lambda m: f"{m.group(1)}PP"),
         (r"\bpura\s*(\d+)\s*pro\b", lambda m: f"{m.group(1)}P"),
@@ -1495,6 +1512,7 @@ def _huawei_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\bp(\d+)\s*plus\b", lambda m: f"P{m.group(1)}P"),
         (r"\bp(\d+)\s*pro\b", lambda m: f"P{m.group(1)}P"),
         (r"\bp(\d+)\b", lambda m: f"P{m.group(1)}"),
+        (r"\bnova\s+(\d+)\s*max\b", lambda m: f"N{m.group(1)}M"),
         (r"\bnova\s+(\d+)\s*plus\b", lambda m: f"N{m.group(1)}P"),
         (r"\bnova\s+(\d+)\s*pro\b", lambda m: f"N{m.group(1)}P"),
         (r"\bnova\s+(\d+)\s*lite\b", lambda m: f"N{m.group(1)}LT"),
@@ -1522,6 +1540,7 @@ def _huawei_device_suffix(model_value: str, variant: str | None) -> str | None:
         (r"\bhonor\s+(\d+)\s*premium\b", lambda m: f"H{m.group(1)}P"),
         (r"\bhonor\s+(\d+)\s*smart\b", lambda m: f"H{m.group(1)}S"),
         (r"\bhonor\s+(\d+)\s*pro\b", lambda m: f"H{m.group(1)}P"),
+        (r"\bhonor\s+x(\d+[a-z]?)\s*plus\b", lambda m: f"HX{m.group(1).upper()}P"),
         (r"\bhonor\s+(\d+)x\b", lambda m: f"H{m.group(1)}X"),
         (r"\bhonor\s+x(\d+[a-z]?)\b", lambda m: f"HX{m.group(1).upper()}"),
         (r"\bhonor\s+(\d+)a\b", lambda m: f"H{m.group(1)}A"),
@@ -2316,7 +2335,7 @@ def infer_device_code(product: Product, category_code: str | None = None) -> str
             return "UNV"
 
     apple_name = (product.name or "").lower()
-    if re.search(r"\bapple\b|\biphone\b|\bipad\b", apple_name):
+    if re.search(r"\bapple\b|\biphone\b|\bipad\b|\bmacbook\b", apple_name):
         apple_name_source = product.name
         if "в дизайне" in apple_name:
             apple_name_source = re.split(
@@ -2925,6 +2944,10 @@ def _battery_variant_rev(product: Product) -> str | None:
 
     if "sp" in name:
         parts.append("SP")
+    if re.search(r"\besim\b", name) and not re.search(r"\bsim\s*\+\s*esim\b", name):
+        parts.append("ESIM")
+    if "с разбора" in name:
+        parts.append("PUL")
     if "system diagnosable" in name or "system daignosable" in name:
         parts.append("SD")
     if "без шлейфа" in name:
@@ -3196,8 +3219,13 @@ def _flex_key(product: Product) -> str | None:
     if explicit:
         return explicit
     name = (product.name or "").lower()
+    if "комплект для верификации" in name:
+        return "VER-ALS-IC-HDX" if "hdx" in name else "VER-ALS-IC"
     parts: list[str] = []
-    if "держатель" in name and ("сим" in name or "sim" in name):
+    is_face_id_repair = "восстанов" in name and ("face id" in name or "фейс id" in name)
+    if is_face_id_repair:
+        pass
+    elif "держатель" in name and ("сим" in name or "sim" in name):
         parts.append("SIMTRAY")
     elif "коннектор" in name and ("сим" in name or "sim" in name):
         parts.append("SIMCON")
@@ -3213,7 +3241,7 @@ def _flex_key(product: Product) -> str | None:
         elif "1 sim version" in name:
             parts.append("1SIM")
         elif "sim + esim" in name or "sim+esim" in name:
-            parts.append("ESIM")
+            pass
         elif (
             parts[0] == "SIMTRAY"
             and re.search(r"\biphone\s*5\b", name)
@@ -3275,8 +3303,11 @@ def _flex_key(product: Product) -> str | None:
         parts.append("SENS")
     if "вспыш" in name or "flash" in name:
         parts.append("FLASH")
-    if "esim" in name or "e-sim" in name:
-        parts.append("ESIM")
+    if not is_face_id_repair:
+        if re.search(r"\bsim\s*\+\s*esim\b", name):
+            parts.append("SIME")
+        elif "esim" in name or "e-sim" in name:
+            parts.append("ESIM")
     if "кнопк" in name:
         if "включен" in name or "power" in name:
             parts.append("PWRBTN")
@@ -3870,7 +3901,7 @@ def _part_key(product: Product) -> str | None:
     if "в сборе" in name and not has_camera_glass:
         flags.append("ASM")
     if has_camera_glass:
-        flags.append("CG")
+        flags.append("CGF" if "шлейф" in name else "CG")
     if re.search(r"\(\s*sp\s*\)", name):
         flags.append("SP")
     if part == "BCOV" and ("широким отверстием" in name or "wide hole" in name):
@@ -3904,6 +3935,8 @@ def _part_key(product: Product) -> str | None:
             flags.append("PCB")
         if re.search(r"в\s+дизайне\s+apple\s+iphone\s+17\s+pro\s+max", name):
             flags.append("D17PM")
+        elif re.search(r"в\s+дизайне\s+apple\s+iphone\s+17\s+pro", name):
+            flags.append("D17P")
     if part in {"HOUS", "FRM", "DFRM", "MID", "BCOV"}:
         if re.search(r"версия:\s*(?:wi-fi|wifi)", name) or "wi-fi version" in name:
             flags.append("WFI")
@@ -4142,6 +4175,15 @@ def _conflict_fallback_rev(
         parts = _compact_parts([current_rev, family_rev])
         if parts:
             return "-".join(parts)
+
+    display_maker_rev = None
+    if _has_parenthesized_token(product.name, "samsung"):
+        display_maker_rev = "SMG"
+    elif _has_parenthesized_token(product.name, "lg"):
+        display_maker_rev = "LG"
+    if display_maker_rev:
+        parts = _compact_parts([current_rev, display_maker_rev])
+        return "-".join(parts)
 
     huawei_rev = _huawei_conflict_rev(product.name)
     if huawei_rev and any(

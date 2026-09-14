@@ -465,6 +465,154 @@ def test_generate_apple_iphone_17_strips_sim_esim_from_device_code(db_session) -
     assert result.planned_sku == "OEM-DSP-IPH17PM-BLK-OR1-SA2"
 
 
+def test_generate_apple_unnumbered_iphone_models_use_compact_codes(db_session) -> None:
+    air = Product(
+        article="apple-iphone-air",
+        name="Задняя крышка для Apple iPhone Air (белый) (в сборе со стеклом камеры) (Premium)",
+        subject="крышка",
+    )
+    duo = Product(
+        article="apple-iphone-duo",
+        name="Аккумулятор для Apple iPhone Duo (SIM + eSIM) (ORIG100) (SP)",
+        subject="аккумулятор",
+    )
+    db_session.add_all([air, duo])
+    db_session.commit()
+
+    air_result = generate_sku_for_product(db_session, air)
+    duo_result = generate_sku_for_product(db_session, duo)
+
+    assert air_result.status == "generated"
+    assert air_result.device_code == "IPHAIR"
+    assert air_result.planned_sku == "OEM-PRT-IPHAIR-BCOV-WHT-PR-CG"
+    assert duo_result.status == "generated"
+    assert duo_result.device_code == "IPHDUO"
+    assert duo_result.planned_sku == "OEM-BAT-IPHDUO-OR-SP"
+
+
+def test_generate_apple_macbook_multi_model_and_unbranded_name_codes(db_session) -> None:
+    multi_model = Product(
+        article="apple-macbook-air-15-multi",
+        name="Проклейка матрицы Apple MacBook Air 15 M2 A2681 / MacBook Air 15 M3 A3113 / MacBook Air 15 M4 A3240 и др.",
+        subject="проклейка",
+    )
+    unbranded_name = Product(
+        article="macbook-pro-16-a2141",
+        name="Проклейка матрицы MacBook Pro 16 Retina A2141 (LATE 2019) (10 шт.)",
+        subject="проклейка",
+    )
+    db_session.add_all([multi_model, unbranded_name])
+    db_session.commit()
+
+    multi_result = generate_sku_for_product(db_session, multi_model)
+    unbranded_result = generate_sku_for_product(db_session, unbranded_name)
+
+    assert multi_result.status == "generated"
+    assert multi_result.device_code == "MBA15M234"
+    assert multi_result.planned_sku == "OEM-PRT-MBA15M234-ADH"
+    assert unbranded_result.status == "generated"
+    assert unbranded_result.device_code == "MBP16A2141"
+    assert unbranded_result.planned_sku == "OEM-PRT-MBP16A2141-ADH"
+
+
+def test_generate_compact_sim_variants_and_face_id_repair_keys(db_session) -> None:
+    battery_esim = Product(
+        article="iphone-18-pro-esim-battery",
+        name="Аккумулятор для Apple iPhone 18 Pro (eSIM) (ORIG100) (SP)",
+        subject="аккумулятор",
+    )
+    flex_sim_esim = Product(
+        article="iphone-18-pro-sim-esim-flex",
+        name="Шлейф для Apple iPhone 18 Pro (SIM + eSIM) с комп. + разъем зарядки + микрофон (белый) (ORIG100)",
+        subject="шлейф",
+    )
+    face_id = Product(
+        article="iphone-17-face-id-combined",
+        name="Шлейф для восстановления Face ID Apple iPhone 17 (SIM + eSIM) / iPhone 17 (eSIM) (JCID) (в сборе с коннектором)",
+        subject="шлейф",
+    )
+    db_session.add_all([battery_esim, flex_sim_esim, face_id])
+    db_session.commit()
+
+    battery_result = generate_sku_for_product(db_session, battery_esim)
+    flex_result = generate_sku_for_product(db_session, flex_sim_esim)
+    face_id_result = generate_sku_for_product(db_session, face_id)
+
+    assert battery_result.planned_sku == "OEM-BAT-IPH18P-OR-SP-ESIM"
+    assert flex_result.planned_sku == "OEM-FLX-IPH18P-CHG-MIC-SIME-WHT-OR1"
+    assert face_id_result.planned_sku == "OEM-FLX-IPH17-FACEID-JCID-CON"
+
+
+def test_generate_verification_flex_and_compact_housing_keys(db_session) -> None:
+    verification = Product(
+        article="iphone-16-verification-flex",
+        name="Шлейф для Apple iPhone 16 комплект для верификации (ALS + IC) (HDX)",
+        subject="шлейф",
+    )
+    housing = Product(
+        article="iphone-14-pro-esim-housing",
+        name="Корпус для Apple iPhone 14 Pro (фиолетовый) (eSIM / US Version) (в сборе) (ORIG100)",
+        subject="корпус",
+    )
+    back_cover = Product(
+        article="iphone-15-plus-cover-flex",
+        name="Задняя крышка для Apple iPhone 15 Plus (черный) (в сборе со стеклом камеры и шлейфом) (Premium)",
+        subject="крышка",
+    )
+    db_session.add_all([verification, housing, back_cover])
+    db_session.commit()
+
+    verification_result = generate_sku_for_product(db_session, verification)
+    housing_result = generate_sku_for_product(db_session, housing)
+    back_cover_result = generate_sku_for_product(db_session, back_cover)
+
+    assert verification_result.planned_sku == "OEM-FLX-IPH16-VER-ALS-IC-HDX"
+    assert housing_result.planned_sku == "OEM-PRT-IPH14P-HOUS-PRP-OR1-ESIM-US"
+    assert back_cover_result.planned_sku == "OEM-PRT-IPH15PL-BCOV-BLK-PR-CGF"
+
+
+def test_generate_pulled_battery_and_redesigned_housing_revisions(db_session) -> None:
+    pulled_battery = Product(
+        article="macbook-pulled-battery",
+        name="Аккумулятор для Apple MacBook Pro 16 Touch Bar A2141 (A2113) (с разбора) (ORIG100)",
+        subject="аккумулятор",
+    )
+    redesigned_housing = Product(
+        article="iphone-14-in-17-design",
+        name="Корпус для Apple iPhone 14 Pro в дизайне Apple iPhone 17 Pro (серебристый) (Premium)",
+        subject="корпус",
+    )
+    db_session.add_all([pulled_battery, redesigned_housing])
+    db_session.commit()
+
+    battery_result = generate_sku_for_product(db_session, pulled_battery)
+    housing_result = generate_sku_for_product(db_session, redesigned_housing)
+
+    assert battery_result.planned_sku == "OEM-BAT-MBP16A2113-A2113-OR-PUL"
+    assert housing_result.planned_sku == "OEM-PRT-IPH14P-HOUS-SLV-PR-D17P"
+
+
+def test_name_category_overrides_stale_normalized_subject(db_session) -> None:
+    glass = Product(
+        article="nova-glass-stale-subject",
+        name="Защитное стекло OG Glass (3 в 1) для Huawei Nova 15 Max (CHZ-LX1) (черный)",
+        subject="крышка",
+    )
+    board = Product(
+        article="iphone-board-stale-subject",
+        name="Материнская плата для Apple iPhone 18 Pro (SIM + eSIM) (256 Гб) (iCloud locked)",
+        subject="материнская плата",
+    )
+    db_session.add_all([glass, board])
+    db_session.commit()
+
+    glass_result = generate_sku_for_product(db_session, glass)
+    board_result = generate_sku_for_product(db_session, board)
+
+    assert glass_result.planned_sku == "OEM-GLS-HWE-N15M-PROT-3IN1-BLK"
+    assert board_result.planned_sku == "OEM-IC-IPH18P-PCB-SIM-256G-ICL"
+
+
 def test_generate_apple_super_retina_is_compact(db_session) -> None:
     product = Product(
         article="1001-apple-super-retina",
@@ -4478,6 +4626,102 @@ def test_generate_huawei_display_distinguishes_nova_13_pro(db_session) -> None:
     assert result.status == "generated"
     assert result.device_code == "HWE-N13P"
     assert result.planned_sku == "OEM-DSP-HWE-N13P-INL-BLK"
+
+
+def test_generate_huawei_pura_90s_variants_use_compact_distinct_codes(db_session) -> None:
+    pro_max = Product(
+        article="huawei-pura-90s-pro-max",
+        name="Аккумулятор для Huawei Pura 90s Pro Max (SCA-LX9) (6000 мАч) (Premium)",
+        subject="аккумулятор",
+        battery_capacity_mah=6000,
+    )
+    pro = Product(
+        article="huawei-pura-90s-pro",
+        name="Аккумулятор для Huawei Pura 90s Pro (MLN-LX9) (6000 мАч) (Premium)",
+        subject="аккумулятор",
+        battery_capacity_mah=6000,
+    )
+    db_session.add_all([pro_max, pro])
+    db_session.commit()
+
+    pro_max_result = generate_sku_for_product(db_session, pro_max)
+    pro_result = generate_sku_for_product(db_session, pro)
+
+    assert pro_max_result.status == "generated"
+    assert pro_max_result.device_code == "HWE-P90SPM"
+    assert pro_max_result.planned_sku == "OEM-BAT-HWE-P90SPM-6000-PR"
+    assert pro_result.status == "generated"
+    assert pro_result.device_code == "HWE-P90SP"
+    assert pro_result.planned_sku == "OEM-BAT-HWE-P90SP-6000-PR"
+
+
+def test_generate_huawei_nova_max_is_distinct_from_base(db_session) -> None:
+    product = Product(
+        article="huawei-nova-15-max",
+        name="Дисплей для Huawei Nova 15 Max (CHZ-LX1) + тачскрин (черный) (In-Cell)",
+        subject="дисплей",
+    )
+    db_session.add(product)
+    db_session.commit()
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "HWE-N15M"
+    assert result.planned_sku == "OEM-DSP-HWE-N15M-INL-BLK"
+
+
+def test_generate_new_plus_and_pro_models_use_distinct_device_codes(db_session) -> None:
+    xiaomi_pro = Product(
+        article="xiaomi-13-pro-cover",
+        name="Задняя крышка для Xiaomi 13 Pro (2210132G) (черный) (в сборе со стеклом камеры) (ORIG100)",
+        subject="крышка",
+    )
+    poco_plus = Product(
+        article="poco-m7-plus-cover",
+        name="Задняя крышка для Xiaomi Poco M7 Plus (зеленый)",
+        subject="крышка",
+    )
+    honor_plus = Product(
+        article="honor-x5c-plus-frame",
+        name="Рамка дисплея для Huawei Honor X5c Plus (NLA-LX2) (черный)",
+        subject="рамка",
+    )
+    db_session.add_all([xiaomi_pro, poco_plus, honor_plus])
+    db_session.commit()
+
+    xiaomi_result = generate_sku_for_product(db_session, xiaomi_pro)
+    poco_result = generate_sku_for_product(db_session, poco_plus)
+    honor_result = generate_sku_for_product(db_session, honor_plus)
+
+    assert xiaomi_result.device_code == "XMI-13P"
+    assert poco_result.device_code == "XMI-PM7PL"
+    assert honor_result.device_code == "HWE-HX5CP"
+
+
+def test_display_conflict_uses_panel_maker_revision(db_session) -> None:
+    lg = Product(
+        article="iphone-18-lg-touch",
+        name="Тачскрин для Apple iPhone 18 Pro + OCA (черный) (Feaglet Master) (LG) (Premium)",
+        subject="тачскрин",
+    )
+    samsung = Product(
+        article="iphone-18-samsung-touch",
+        name="Тачскрин для Apple iPhone 18 Pro + OCA (черный) (Feaglet Master) (Samsung) (Premium)",
+        subject="тачскрин",
+    )
+    db_session.add_all([lg, samsung])
+    db_session.commit()
+
+    lg_result = generate_sku_for_product(db_session, lg)
+    apply_sku_generation_result(db_session, lg, lg_result)
+    db_session.commit()
+    samsung_result = generate_sku_for_product(db_session, samsung)
+
+    assert lg_result.status == "generated"
+    assert samsung_result.status == "generated"
+    assert samsung_result.rev == "SMG"
+    assert samsung_result.planned_sku == "OEM-DSP-IPH18P-BLK-CPH-OCA-FEA-SMG"
 
 
 def test_generate_huawei_display_distinguishes_y9_model_year(db_session) -> None:
