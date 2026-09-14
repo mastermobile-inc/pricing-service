@@ -83,10 +83,11 @@ def sync_assembly_queue(
     *,
     client: Any,
     limit: int = 500,
+    maximum_limit: int = 500,
     now: datetime | None = None,
 ) -> AssemblyQueueSnapshot:
     sync_at = _ensure_aware(now or datetime.now(timezone.utc))
-    payloads = _fetch_executing_deals(client, limit=limit)
+    payloads = _fetch_executing_deals(client, limit=limit, maximum_limit=maximum_limit)
     existing = {
         item.deal_id: item for item in session.scalars(select(OrderAssemblyQueueItem)).all()
     }
@@ -231,9 +232,11 @@ def render_error_xml(
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def _fetch_executing_deals(client: Any, *, limit: int) -> list[dict[str, Any]]:
-    if limit < 1 or limit > 500:
-        raise ValueError("limit must be between 1 and 500")
+def _fetch_executing_deals(
+    client: Any, *, limit: int, maximum_limit: int = 500
+) -> list[dict[str, Any]]:
+    if not 1 <= maximum_limit <= 5000 or not 1 <= limit <= maximum_limit:
+        raise ValueError("limit exceeds the permitted complete-queue bound")
     result: list[dict[str, Any]] = []
     start: int | str = 0
     while True:

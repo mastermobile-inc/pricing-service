@@ -1,17 +1,46 @@
 """Restricted test entrypoint; never mount event, payment or shipment writers."""
 
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
+from fastapi import Depends, FastAPI, Query, Response
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
-from app.api.order_fulfillment import router
+from app.api.dependencies import get_db, require_order_fulfillment_internal_token
+from app.api.order_fulfillment import assembly_queue_response
 from app.core.config import get_settings
 
 STATE_ROOT = Path("/opt/MM/.local/task46-test-assembly")
+
+
+class TestQueueSnapshot:
+    """Coalesce UI reads only; never extend timestamps or return expired/error data."""
+
+    __test__ = False
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self.clock = clock
+        self.lock = Lock()
+        self.cached: tuple[int, float, bytes] | None = None
+
+    def get(self, limit: int, refresh: Callable[[], Response]) -> Response:
+        with self.lock:
+            now = self.clock()
+            if self.cached is not None:
+                key, until, body = self.cached
+                if key == limit and now < until:
+                    return Response(body, media_type="application/xml")
+            self.cached = None
+            response = refresh()
+            # Age starts BEFORE the upstream read, not at response completion.
+            if response.status_code == 200 and self.clock() < now + 15:
+                self.cached = (limit, now + 15, bytes(response.body))
+            return response
 
 
 def validate_runtime(environment: str, database_url: str | None) -> None:
@@ -40,20 +69,20 @@ def create_app() -> FastAPI:
     if source == "production_readonly" and url.hostname != "crm.master-mobile.ru":
         raise ValueError("assembly_crm_source_mismatch")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    selected = [
-        route
-        for route in router.routes
-        if isinstance(route, APIRoute)
-        and route.path == "/assembly-queue"
-        and route.methods == {"GET"}
-    ]
-    if len(selected) != 1:
-        raise RuntimeError("assembly_route_identity_changed")
-    # Reuse the actual endpoint, dependencies and error handling without
-    # mounting the other (mutating) order-fulfillment endpoints.
-    from fastapi import APIRouter
+    snapshot = TestQueueSnapshot()
 
-    restricted = APIRouter()
-    restricted.routes.extend(selected)
-    app.include_router(restricted, prefix="/api/order-fulfillment")
+    @app.get(
+        "/api/order-fulfillment/assembly-queue",
+        dependencies=[Depends(require_order_fulfillment_internal_token)],
+    )
+    def queue(
+        format: str = Query(default="xml", pattern="^xml$"),
+        limit: int = Query(default=2000, ge=1, le=2000),
+        db: Session = Depends(get_db),
+    ) -> Response:
+        del format
+        return snapshot.get(
+            limit, lambda: assembly_queue_response(db, limit=limit, maximum_limit=2000)
+        )
+
     return app

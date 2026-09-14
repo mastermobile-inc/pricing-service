@@ -79,6 +79,10 @@ def get_assembly_queue(
     db: Session = Depends(get_db),
 ) -> Response:
     del format
+    return assembly_queue_response(db, limit=limit)
+
+
+def assembly_queue_response(db: Session, *, limit: int, maximum_limit: int = 500) -> Response:
     settings = get_settings()
     if not settings.order_fulfillment_bitrix_webhook_url:
         state = assembly_queue.get_sync_state(db)
@@ -99,6 +103,7 @@ def get_assembly_queue(
             db,
             client=client,
             limit=limit,
+            maximum_limit=maximum_limit,
         )
         db.commit()
     except assembly_queue.AssemblyQueueError as exc:
