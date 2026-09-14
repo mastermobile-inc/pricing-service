@@ -4568,7 +4568,7 @@ def _add_reply_command(db_session, case, *, status: str, created_at: datetime) -
         SiteServiceRequestCommand(
             case_id=case.id,
             command_key=command_key,
-            reply_encrypted=cipher.encrypt("Ответ клиенту", event_id=command_key),
+            reply_encrypted=cipher.encrypt("Ответ клиенту".encode(), event_id=command_key),
             reply_sha256="0" * 64,
             status=status,
             created_at=created_at,
@@ -4603,9 +4603,7 @@ def test_delivered_reply_keeps_the_card_closed(db_session) -> None:
     assert results[0]["closeReverted"] is False
     assert results[0]["closeHeld"] == "delivered"
     assert api.items[item_id]["stageId"] == "DT1134_55:SUCCESS"
-    assert not [
-        row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]
-    ]
+    assert not [row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]]
 
 
 def test_reply_in_flight_postpones_the_close_gate(db_session) -> None:
@@ -4737,9 +4735,7 @@ def test_accepted_close_leaves_no_close_gate_notice(db_session) -> None:
 
     assert results[0]["closeReverted"] is False
     assert "closeRevertNoticeDelivered" not in results[0]
-    assert not [
-        row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]
-    ]
+    assert not [row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]]
 
 
 def test_close_gate_survives_a_failed_notice(db_session) -> None:
