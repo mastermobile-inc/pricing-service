@@ -1,0 +1,27 @@
+version: 1
+record_type: evidence
+evidence_id: assortment-lifecycle.order-corrections-registry.observed
+phase_id: assortment-lifecycle.order-corrections-registry
+spec: docs/specs/assortment-lifecycle-policy.md
+observed_at: '2026-09-14T14:25:09+03:00'
+environment:
+  workspace: /opt/MM/.worktrees/order-corrections-part2-20260914
+  source_commit: c666356527f2 (база активного релиза sku-normalize-before-generation-20260914-c666356)
+  runtime: pricing-service candidate; 1С Ekama только чтение; записи в базу и внешние системы нет
+result: passed
+verifications:
+- id: registry-sync-tests
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py tests/test_procurement_order_registry.py tests/test_report_display_supplier_lead_time_history_task.py tests/test_procurement_bitrix_process.py -q
+  exit_code: 0
+  observed_result: '103 проверки пройдено: выгрузка карго-заказов, реестр заказов, факты и история сроков поставки.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.json
+- id: ordered-vs-register-reconciliation
+  command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.py
+  exit_code: 0
+  observed_result: 'Заказ РБГУ0000474: заказано до корректировок 3937, после — 3805, остаток регистра 3805; расхождение снято. Снятая позиция РБ000076661 из состава исчезла, частично снятые пересчитаны (40 -> 18, 30 -> 15).'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.json
+- id: style-checks
+  command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle_facts.py scripts/sync_open_cargo_supplier_orders_to_bitrix.py tasks/report_display_supplier_lead_time_history.py tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle_facts.py scripts/sync_open_cargo_supplier_orders_to_bitrix.py tasks/report_display_supplier_lead_time_history.py tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py
+  exit_code: 0
+  observed_result: 'Ruff: All checks passed. Black: файлы без изменений.'
+  artifact: docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.json

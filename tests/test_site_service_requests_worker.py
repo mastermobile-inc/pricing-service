@@ -3002,7 +3002,9 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     assert case.assigned_user_id == 1003
     assert case.escalated_at is not None
     assert api.items[int(case.bitrix_item_id)]["stageId"] == "DT1134_55:WORK"
-    assert [method for method, _params in api.calls].count("crm.timeline.comment.add") == 1
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-escalation" in text for text in comments) == 1
+    assert sum("site-service-close-gate" in text for text in comments) == 1
     assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
 
     api.items[int(case.bitrix_item_id)]["stageId"] = "DT1134_55:FAIL"
@@ -4555,6 +4557,221 @@ def test_close_without_reason_is_still_reverted(db_session) -> None:
     assert api.items[item_id]["stageId"] == "DT1134_55:WORK"
     db_session.refresh(case)
     assert case.closed_without_response_at is None
+
+
+def _add_reply_command(db_session, case, *, status: str, created_at: datetime) -> None:
+    """Ответ клиенту, отправленный из карточки, до подтверждения событием с сайта."""
+
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    command_key = f"site-service-reply:{case.id}:{status}:{created_at.isoformat()}"
+    db_session.add(
+        SiteServiceRequestCommand(
+            case_id=case.id,
+            command_key=command_key,
+            reply_encrypted=cipher.encrypt("Ответ клиенту", event_id=command_key),
+            reply_sha256="0" * 64,
+            status=status,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+    db_session.commit()
+
+
+def test_delivered_reply_keeps_the_card_closed(db_session) -> None:
+    """Ответ уже доставлен на сайт: гейт не откатывает закрытие, ожидая события."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    _add_reply_command(
+        db_session,
+        case,
+        status="applied",
+        created_at=datetime(2026, 8, 22, 7, 58, tzinfo=UTC),
+    )
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is False
+    assert results[0]["closeHeld"] == "delivered"
+    assert api.items[item_id]["stageId"] == "DT1134_55:SUCCESS"
+    assert not [
+        row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]
+    ]
+
+
+def test_reply_in_flight_postpones_the_close_gate(db_session) -> None:
+    """Ответ ещё отправляется: решение по стадии откладывается, а не откатывается."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    _add_reply_command(
+        db_session,
+        case,
+        status="pending",
+        created_at=datetime(2026, 8, 22, 7, 59, tzinfo=UTC),
+    )
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is False
+    assert results[0]["closeHeld"] == "in_flight"
+    assert api.items[item_id]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.closed_without_response_at is None
+
+
+def test_stale_command_stops_holding_the_close_gate(db_session) -> None:
+    """Команда, зависшая дольше аренды, больше не удерживает гейт."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    _add_reply_command(
+        db_session,
+        case,
+        status="pending",
+        created_at=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is True
+    assert "closeHeld" not in results[0]
+    assert api.items[item_id]["stageId"] == "DT1134_55:WORK"
+
+
+def test_failed_reply_command_does_not_hold_the_close_gate(db_session) -> None:
+    """Неудачная отправка не считается ответом: закрытие откатывается."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    _add_reply_command(
+        db_session,
+        case,
+        status="failed",
+        created_at=datetime(2026, 8, 22, 7, 59, tzinfo=UTC),
+    )
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is True
+    assert api.items[item_id]["stageId"] == "DT1134_55:WORK"
+
+
+def test_reverted_close_explains_itself_in_the_card(db_session) -> None:
+    """Откат закрытия оставляет в карточке объяснение, а не молчит."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is True
+    assert results[0]["closeRevertNoticeDelivered"] is True
+    notices = [
+        row
+        for row in api.timeline_comments
+        if f"[site-service-close-gate:{case.id}]" in row["COMMENT"]
+    ]
+    assert len(notices) == 1
+    assert notices[0]["ENTITY_TYPE"] == "dynamic_1134"
+    assert notices[0]["ENTITY_ID"] == str(item_id)
+    assert "Закрыть без ответа: причина" in notices[0]["COMMENT"]
+
+
+def test_accepted_close_leaves_no_close_gate_notice(db_session) -> None:
+    """Закрытие с указанной причиной проходит молча: откатывать нечего."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    api.items[int(case.bitrix_item_id)]["UF_CLOSE_REASON"] = "SPAM"
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is False
+    assert "closeRevertNoticeDelivered" not in results[0]
+    assert not [
+        row for row in api.timeline_comments if "site-service-close-gate" in row["COMMENT"]
+    ]
+
+
+def test_close_gate_survives_a_failed_notice(db_session) -> None:
+    """Недоступный таймлайн не отменяет сам откат: карточка всё равно открыта."""
+
+    settings = _close_reason_settings()
+    api = FakeBitrixApi()
+    case, reader = _prepare_closed_case(db_session, api, settings)
+    item_id = int(case.bitrix_item_id)
+    original_call = api.call
+
+    def failing_call(method: str, params=None, **kwargs):
+        if method == "crm.timeline.comment.add":
+            raise RuntimeError("bitrix_unavailable")
+        return original_call(method, params, **kwargs)
+
+    api.call = failing_call
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    assert results[0]["closeReverted"] is True
+    assert results[0]["closeRevertNoticeDelivered"] is False
+    assert api.items[item_id]["stageId"] == "DT1134_55:WORK"
+    db_session.refresh(case)
+    assert case.closed_without_response_at is None
+    assert case.assignment_last_error_code is None
 
 
 def test_unknown_close_reason_does_not_release_the_gate(db_session) -> None:

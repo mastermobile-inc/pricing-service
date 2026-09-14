@@ -1,0 +1,44 @@
+version: 1
+record_type: phase
+phase_id: assortment-lifecycle.order-corrections-registry
+spec: docs/specs/assortment-lifecycle-policy.md
+objective: "Свести «заказано» с остатком регистра во всех потребителях количества заказа: реестр заказов, выгрузка карго-заказов в Bitrix24 и история сроков поставки."
+risk: medium
+scope:
+  - Выгрузка открытых карго-заказов читает корректировки и уменьшает количество строк до фактически отгруженного.
+  - "«Заказано» по заказу считается после корректировок, поэтому статус заказа перестаёт ложно уходить в «требует сверки»."
+  - История сроков поставки исключает снятые строки из статистики заказов без поступления.
+  - Общая функция вычитания корректировок с распределением снятого количества по строкам одной номенклатуры.
+non_goals:
+  - "Печать этикеток, мастер-реестр ВЭД, источники цены закупки и счётчик заказов поставщика — отдельная работа по результатам аудита 2026-09-12."
+  - Изменение правила отбора номенклатуры по корню каталога и лимита расчёта — отдельное решение.
+  - Запись в 1С и создание задач в Bitrix24.
+dependencies:
+  - docs/phases/assortment-lifecycle-order-corrections.yml
+allowed_paths:
+  - app/services/assortment_lifecycle_facts.py
+  - scripts/sync_open_cargo_supplier_orders_to_bitrix.py
+  - tasks/report_display_supplier_lead_time_history.py
+  - tests/test_assortment_lifecycle_facts.py
+  - tests/test_sync_open_procurement_supplier_orders.py
+  - docs/specs/assortment-lifecycle-policy.md
+  - docs/phases/assortment-lifecycle-order-corrections-registry.yml
+  - docs/evidence/assortment-lifecycle-order-corrections-registry.yml
+  - docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.json
+approval:
+  status: approved
+  approved_by: user
+  approved_at: "2026-09-14T14:20:00+03:00"
+  source: docs/specs/assortment-lifecycle-policy.md#02-отбор-заказов-поставщику-корректировки
+verification:
+  - id: registry-sync-tests
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py tests/test_procurement_order_registry.py tests/test_report_display_supplier_lead_time_history_task.py tests/test_procurement_bitrix_process.py -q
+    expected_result: Выгрузка, реестр заказов, факты и история сроков поставки проходят тесты с учётом корректировок.
+  - id: ordered-vs-register-reconciliation
+    command: PYTHONPATH=. /opt/MM/pricing-service/.venv/bin/python docs/evidence/assortment-lifecycle-order-corrections-registry-reconciliation.py
+    expected_result: "На заказе РБГУ0000474 «заказано после корректировок» совпадает с остатком регистра, снятая позиция РБ000076661 из состава исчезает."
+  - id: style-checks
+    command: /opt/MM/pricing-service/.venv/bin/python -m ruff check app/services/assortment_lifecycle_facts.py scripts/sync_open_cargo_supplier_orders_to_bitrix.py tasks/report_display_supplier_lead_time_history.py tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py && BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check app/services/assortment_lifecycle_facts.py scripts/sync_open_cargo_supplier_orders_to_bitrix.py tasks/report_display_supplier_lead_time_history.py tests/test_sync_open_procurement_supplier_orders.py tests/test_assortment_lifecycle_facts.py
+    expected_result: Ruff и Black завершаются без замечаний.
+stop_condition: "Остановиться на кандидате релиза и сверке. Переключение боевого релиза требует отдельного разрешения пользователя."
+status: in_progress

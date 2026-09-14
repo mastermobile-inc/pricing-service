@@ -1,0 +1,22 @@
+{
+  "order": "РБГУ0000474",
+  "lines_before": 144,
+  "lines_after": 137,
+  "ordered_before_corrections": "3937",
+  "ordered_after_corrections": "3805",
+  "open_quantity_register": "3805",
+  "cancelled_code_present_after": false,
+  "partially_corrected_examples": [
+    {
+      "code": "РБ000038484",
+      "before": "40",
+      "shipping": "18"
+    },
+    {
+      "code": "РБ000065095",
+      "before": "30",
+      "shipping": "15"
+    }
+  ],
+  "reconciled": true
+}
