@@ -3271,6 +3271,92 @@ def _site_service_request_daily_entry_is_overdue(
     )
 
 
+def _site_service_request_reply_evidence(
+    session: Session,
+    *,
+    case_id: int,
+    settings: Settings,
+    current_time: datetime,
+) -> str | None:
+    """Признак ответа клиенту, которого ещё нет в ``first_response_at``.
+
+    ``first_response_at`` проставляется только после события ``message.created``
+    с сайта, а оно приходит спустя минуты. Команда ответа живёт в нашей базе с
+    момента нажатия «Отправить клиенту», поэтому она — более свежий источник
+    правды о том, что клиенту ответили:
+
+    * ``delivered`` — сайт подтвердил доставку (``applied``), закрытие законно;
+    * ``in_flight`` — ответ ещё отправляется, решение по стадии откладывается
+      до следующего тика, чтобы гейт не откатил закрытие в это окно.
+
+    Аренда команды ограничивает окно ожидания: зависшая команда старше
+    ``command_lease_seconds`` перестаёт удерживать гейт.
+    """
+
+    applied = session.scalar(
+        select(SiteServiceRequestCommand.id).where(
+            SiteServiceRequestCommand.case_id == case_id,
+            SiteServiceRequestCommand.status == "applied",
+        )
+    )
+    if applied is not None:
+        return "delivered"
+    in_flight_since = current_time - timedelta(
+        seconds=settings.site_service_requests_command_lease_seconds
+    )
+    in_flight = session.scalar(
+        select(SiteServiceRequestCommand.id).where(
+            SiteServiceRequestCommand.case_id == case_id,
+            SiteServiceRequestCommand.status.in_(("pending", "leased")),
+            SiteServiceRequestCommand.created_at >= in_flight_since,
+        )
+    )
+    if in_flight is not None:
+        return "in_flight"
+    return None
+
+
+def _site_service_request_close_gate_comment(case_id: int) -> str:
+    """Объяснение отката закрытия, которое гейт оставляет в карточке."""
+
+    return (
+        "Закрытие отменено: по обращению нет ответа клиенту. "
+        "Ответьте клиенту из карточки («Переписка с клиентом» → отправить клиенту) "
+        "либо заполните поле «Закрыть без ответа: причина» и закройте карточку снова. "
+        f"[site-service-close-gate:{case_id}]"
+    )
+
+
+def _deliver_site_service_request_close_gate_notice(
+    *,
+    case_id: int,
+    bitrix_item_id: int,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+) -> bool:
+    """Пишет в карточку причину отката. Недоступный Bitrix гейт не откатывает.
+
+    Сам откат уже подтверждён readback-ом и закоммичен, а комментарий — пояснение
+    для человека, поэтому его сбой не должен ронять assignment lane и заново
+    дёргать стадию на следующем тике.
+
+    Дубль не проверяется намеренно: после отката карточка снова в открытой стадии,
+    поэтому следующий тик отката не делает и комментарий приходится ровно на одно
+    закрытие. Пропущенное объяснение хуже повторенного: без него человек видит
+    только то, что карточка «сама» вернулась в «Новая».
+    """
+
+    try:
+        writer.add_timeline_comment(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=bitrix_item_id,
+            comment=_site_service_request_close_gate_comment(case_id),
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
 def reconcile_site_service_request_assignments(
     session: Session,
     *,
@@ -3450,6 +3536,7 @@ def reconcile_site_service_request_assignments(
             )
             _apply_assignment_base_status(case, assignment_state=decision.state)
             close_reverted = False
+            close_hold_reason: str | None = None
             fields: dict[str, Any] = {
                 field_map["first_response_due_at"]: decision.first_response_due_at,
             }
@@ -3478,8 +3565,14 @@ def reconcile_site_service_request_assignments(
                     case.closed_without_response_at = current_time
                     case.close_without_response_reason = close_reason
                 else:
+                    close_hold_reason = _site_service_request_reply_evidence(
+                        session,
+                        case_id=case.id,
+                        settings=settings,
+                        current_time=current_time,
+                    )
                     return_stage_id = case.last_open_stage_id or fallback_open_stage_id
-                    if return_stage_id:
+                    if close_hold_reason is None and return_stage_id:
                         fields["stageId"] = return_stage_id
                         close_reverted = True
             if decision.assigned_user_id is not None or decision.state == "waiting":
@@ -3543,6 +3636,14 @@ def reconcile_site_service_request_assignments(
             # checkpoints and is retried idempotently on the next tick.
             session.commit()
             assignment_state_committed = True
+            close_revert_notice_delivered = False
+            if close_reverted:
+                close_revert_notice_delivered = _deliver_site_service_request_close_gate_notice(
+                    case_id=case_id,
+                    bitrix_item_id=bitrix_item_id,
+                    settings=settings,
+                    writer=writer,
+                )
             _deliver_site_service_request_escalation(
                 session,
                 case_id=case_id,
@@ -3550,16 +3651,19 @@ def reconcile_site_service_request_assignments(
                 writer=writer,
                 now=current_time,
             )
-            results.append(
-                {
-                    "caseId": case_id,
-                    "ticketId": ticket_id,
-                    "assignmentState": decision.state,
-                    "assignedUserId": decision.assigned_user_id,
-                    "escalated": escalated_now,
-                    "closeReverted": close_reverted,
-                }
-            )
+            result: dict[str, Any] = {
+                "caseId": case_id,
+                "ticketId": ticket_id,
+                "assignmentState": decision.state,
+                "assignedUserId": decision.assigned_user_id,
+                "escalated": escalated_now,
+                "closeReverted": close_reverted,
+            }
+            if close_reverted:
+                result["closeRevertNoticeDelivered"] = close_revert_notice_delivered
+            if close_hold_reason is not None:
+                result["closeHeld"] = close_hold_reason
+            results.append(result)
         except Exception as exc:
             failed_case, checkpoint_recorded = _checkpoint_site_service_request_reconcile_failure(
                 session,
