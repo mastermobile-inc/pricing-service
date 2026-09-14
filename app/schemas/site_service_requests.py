@@ -6,6 +6,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.customer_returns import (
+    CustomerReturnCarrier,
+    CustomerReturnShipmentResponse,
+)
+
 _EVENT_ID = re.compile(r"^site-support:(\d+):(\d+)$")
 _EMAIL_EVENT_ID = re.compile(r"^bitrix-mail:(shop|info):(\d+)$")
 SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH = 200_000
@@ -420,3 +425,21 @@ class SiteServiceRequestInternalNoteRequest(BaseModel):
         alias="clientRequestId", min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
     )
     text: str = Field(min_length=1, max_length=20_000)
+
+
+class SiteServiceRequestReturnCreateRequest(BaseModel):
+    """Оформление возврата из карточки обращения."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    carrier: CustomerReturnCarrier
+    tracking_number: str = Field(alias="trackingNumber", min_length=5, max_length=64)
+
+
+class SiteServiceRequestReturnsResponse(BaseModel):
+    """Возвраты обращения для вкладки карточки."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    can_register: bool = Field(alias="canRegister")
+    returns: list[CustomerReturnShipmentResponse]

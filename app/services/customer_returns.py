@@ -1127,3 +1127,33 @@ def complete_action(
     db.commit()
     db.refresh(action)
     return action
+
+
+def list_service_request_returns(
+    db: Session,
+    *,
+    item_id: int,
+    limit: int = 20,
+) -> list[CustomerReturnShipment]:
+    """Возвраты, привязанные к карточке сервисного обращения.
+
+    Учитывается и подтверждённая связь (``service_request_item_id``), и ранняя
+    привязка по ``bitrix_case_id``: возврат, заведённый из карточки, ссылается на
+    неё с первой секунды, а полная связь достраивается чтением карточки в Bitrix24.
+    """
+
+    statement = (
+        _shipment_query()
+        .where(
+            or_(
+                CustomerReturnShipment.service_request_item_id == item_id,
+                CustomerReturnShipment.bitrix_case_id == str(item_id),
+            )
+        )
+        .order_by(
+            CustomerReturnShipment.updated_at.desc(),
+            CustomerReturnShipment.id.desc(),
+        )
+        .limit(limit)
+    )
+    return list(db.scalars(statement).all())

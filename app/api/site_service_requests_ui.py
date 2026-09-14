@@ -19,10 +19,15 @@ from app.schemas.site_service_requests import (
     SiteServiceRequestConversationMutationResponse,
     SiteServiceRequestConversationResponse,
     SiteServiceRequestInternalNoteRequest,
+    SiteServiceRequestReturnCreateRequest,
+    SiteServiceRequestReturnsResponse,
     SiteServiceRequestUiSessionRequest,
     SiteServiceRequestUiSessionResponse,
     SiteServiceRequestUiUser,
 )
+from app.services import customer_return_service_requests as customer_return_request_service
+from app.services import customer_returns as customer_return_service
+from app.services.customer_return_carriers import CustomerReturnCarrierError
 from app.services.site_service_request_conversations import (
     build_site_service_request_conversation,
     create_site_service_request_internal_note,
@@ -468,4 +473,97 @@ def download_attachment(
             "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(file.safe_filename)}",
             "Cache-Control": "private, no-store",
         },
+    )
+
+
+@router.get(
+    "/items/{item_id}/returns",
+    response_model=SiteServiceRequestReturnsResponse,
+)
+def item_returns(
+    item_id: int,
+    response: Response,
+    ui_session: SiteServiceRequestUiSession = Depends(require_site_service_request_ui_session),
+    settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db),
+) -> SiteServiceRequestReturnsResponse:
+    """Возвраты этого обращения для вкладки карточки."""
+
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_item(ui_session, item_id)
+    shipments = customer_return_service.list_service_request_returns(db, item_id=item_id)
+    customer_return_service.attach_expertise_cases(db, shipments)
+    return SiteServiceRequestReturnsResponse.model_validate(
+        {
+            "canRegister": _ui_user_can_write(ui_session, settings),
+            "returns": shipments,
+        }
+    )
+
+
+@router.post(
+    "/items/{item_id}/returns",
+    response_model=SiteServiceRequestReturnsResponse,
+    status_code=201,
+)
+def register_item_return(
+    item_id: int,
+    payload: SiteServiceRequestReturnCreateRequest,
+    response: Response,
+    ui_session: SiteServiceRequestUiSession = Depends(require_site_service_request_ui_session),
+    settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db),
+) -> SiteServiceRequestReturnsResponse:
+    """Регистрирует возврат из карточки обращения и привязывает его к ней.
+
+    Реестр возвратов остаётся единственным местом хранения: карточка только
+    заводит запись и показывает её состояние, чтобы менеджер не переписывал трек
+    в поля обращения и не заводил вторую запись про ту же посылку.
+    """
+
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_item(ui_session, item_id)
+    _require_ui_writes(ui_session, settings)
+    actor = str(ui_session.user_id)
+    try:
+        link = customer_return_request_service.get_customer_return_service_request(
+            settings=settings,
+            item_id=item_id,
+        )
+    except customer_return_request_service.CustomerReturnServiceRequestNotFound as exc:
+        raise HTTPException(status_code=404, detail="service_request_not_found") from exc
+    except customer_return_request_service.CustomerReturnServiceRequestUnavailable as exc:
+        raise HTTPException(status_code=503, detail="service_request_lookup_unavailable") from exc
+    try:
+        shipment, created = customer_return_service.register_return(
+            db,
+            carrier=payload.carrier,
+            tracking_number=payload.tracking_number,
+            source="service_request_card",
+            source_ref=str(item_id),
+            bitrix_case_id=str(item_id),
+            site_ticket_id=link.site_ticket_id,
+            onec_order_ref=link.order_ref,
+            created_by_bitrix_user_id=actor,
+        )
+        if shipment.service_request_item_id != item_id:
+            shipment = customer_return_service.update_return_service_request_link(
+                db,
+                shipment.id,
+                service_request_link=link,
+                actor_bitrix_user_id=actor,
+            )
+        db.commit()
+    except customer_return_service.CustomerReturnConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CustomerReturnCarrierError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not created:
+        response.status_code = 200
+    shipments = customer_return_service.list_service_request_returns(db, item_id=item_id)
+    customer_return_service.attach_expertise_cases(db, shipments)
+    return SiteServiceRequestReturnsResponse.model_validate(
+        {"canRegister": True, "returns": shipments}
     )
