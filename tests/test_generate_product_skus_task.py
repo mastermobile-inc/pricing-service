@@ -50,6 +50,7 @@ def test_generate_product_skus_task_writes_ut103_sku_property_update(tmp_path: P
             "-m",
             "tasks.generate_product_skus",
             "--write",
+            "--normalize-subjects",
             "--write-ready",
             "--exchange-root",
             str(exchange_root),
@@ -67,6 +68,12 @@ def test_generate_product_skus_task_writes_ut103_sku_property_update(tmp_path: P
 
     summary = json.loads(result.stdout)
     assert summary["generated"] == 1
+    assert summary["subject_normalization"] == {
+        "processed": 1,
+        "updated": 1,
+        "llm_used": 0,
+        "llm_failed": 0,
+    }
     assert summary["ut103_property_rows"] == 1
     assert summary["ut103_property_skipped"] == []
 
@@ -93,6 +100,36 @@ def test_generate_product_skus_task_writes_ut103_sku_property_update(tmp_path: P
         product = session.query(Product).filter_by(article="1008").one()
         assert product.planned_sku == "F5-DSP-IPH12-OLD-BLK-CPH"
         assert product.sku_sync_status == "missing_in_1c"
+        assert product.subject_generated == "дисплей"
+        assert product.subject == "дисплей"
+        assert product.subject_source == "generated"
+
+
+def test_generate_product_skus_task_rejects_normalization_without_write(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sku.db"
+    db_url = f"sqlite:///{db_path}"
+    engine = create_engine(db_url)
+    Base.metadata.create_all(engine)
+
+    project_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.generate_product_skus",
+            "--normalize-subjects",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+        env={**os.environ, "DATABASE_URL": db_url},
+    )
+
+    assert result.returncode != 0
+    assert "--normalize-subjects requires --write" in result.stderr
 
 
 def test_generate_product_skus_task_exports_existing_missing_sku(tmp_path: Path) -> None:

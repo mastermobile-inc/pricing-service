@@ -39,6 +39,7 @@ fi
 cmd=(
   "${PYTHON_BIN}" -m tasks.generate_product_skus
   --write
+  --normalize-subjects
   --export-existing
   --write-ready
   --allow-empty
