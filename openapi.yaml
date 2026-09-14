@@ -3403,6 +3403,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/items/{item_id}/route:
+    patch:
+      summary: Change Handoff Route
+      operationId: change_handoff_route_api_bitrix_logistics_handoffs_draft__draft_id__items__item_id__route_patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftRouteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/transfers/{transfer_id}/reroute:
+    post:
+      summary: Reroute Transfer
+      operationId: reroute_transfer_api_bitrix_logistics_transfers__transfer_id__reroute_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsRerouteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsRerouteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/handoffs/draft/{draft_id}/items/{item_id}/remove:
     post:
       summary: Remove Handoff Draft Item
@@ -9921,6 +9991,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/items/{item_id}/route:
+    patch:
+      summary: Web Change Route
+      operationId: web_change_route_api_logistics_web_handoffs_draft__draft_id__items__item_id__route_patch
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftRouteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/transfers/{transfer_id}/reroute:
+    post:
+      summary: Web Reroute
+      operationId: web_reroute_api_logistics_web_transfers__transfer_id__reroute_post
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsRerouteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsRerouteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/web/handoffs/draft/{draft_id}/items/{item_id}/remove:
     post:
       summary: Web Remove Handoff Item
@@ -14597,6 +14749,14 @@ components:
       title: BitrixLogisticsDraftCreateRequest
     BitrixLogisticsDraftScanRequest:
       properties:
+        route_mode:
+          anyOf:
+          - type: string
+            enum:
+            - direct
+            - via_transit
+          - type: 'null'
+          title: Route Mode
         barcode:
           anyOf:
           - type: string
@@ -24997,6 +25157,21 @@ components:
       title: LogisticsDraftItemRemoveRequest
     LogisticsDraftItemResponse:
       properties:
+        final_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Final Warehouse Id
+        final_warehouse_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Warehouse Name
+        route_options:
+          items:
+            $ref: '#/components/schemas/LogisticsRouteOption'
+          type: array
+          title: Route Options
         id:
           type: integer
           title: Id
@@ -25115,6 +25290,18 @@ components:
       - item_count
       - items
       title: LogisticsDraftResponse
+    LogisticsDraftRouteRequest:
+      properties:
+        mode:
+          type: string
+          enum:
+          - direct
+          - via_transit
+          title: Mode
+      type: object
+      required:
+      - mode
+      title: LogisticsDraftRouteRequest
     LogisticsDraftScanRequest:
       properties:
         actor_user_id:
@@ -25553,6 +25740,26 @@ components:
       title: LogisticsManualReviewResponse
     LogisticsMonitorResponse:
       properties:
+        status_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status Label
+        version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Version
+        final_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Final Warehouse Id
+        route_options:
+          items:
+            $ref: '#/components/schemas/LogisticsRouteOption'
+          type: array
+          title: Route Options
         transfer_id:
           type: integer
           title: Transfer Id
@@ -25653,6 +25860,11 @@ components:
       title: LogisticsMonitorResponse
     LogisticsPendingItem:
       properties:
+        status_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status Label
         transfer_id:
           type: integer
           title: Transfer Id
@@ -25693,6 +25905,10 @@ components:
       title: LogisticsPendingItem
     LogisticsPendingResponse:
       properties:
+        draft_total_count:
+          type: integer
+          title: Draft Total Count
+          default: 0
         items:
           items:
             $ref: '#/components/schemas/LogisticsPendingItem'
@@ -25751,6 +25967,68 @@ components:
       required:
       - telegram_file_id
       title: LogisticsPhotoInput
+    LogisticsRerouteRequest:
+      properties:
+        mode:
+          type: string
+          enum:
+          - direct
+          - via_transit
+          title: Mode
+        reason:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Reason
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        idempotency_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Idempotency Key
+      type: object
+      required:
+      - mode
+      - reason
+      - expected_version
+      - idempotency_key
+      title: LogisticsRerouteRequest
+    LogisticsRerouteResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - status
+      - version
+      title: LogisticsRerouteResponse
+    LogisticsRouteOption:
+      properties:
+        mode:
+          type: string
+          enum:
+          - direct
+          - via_transit
+          title: Mode
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        warehouse_name:
+          type: string
+          title: Warehouse Name
+      type: object
+      required:
+      - mode
+      - warehouse_id
+      - warehouse_name
+      title: LogisticsRouteOption
     LogisticsRouteRunCreateRequest:
       properties:
         external_id:
@@ -26545,6 +26823,14 @@ components:
             maxLength: 255
           - type: 'null'
           title: Lookup Code
+        route_mode:
+          anyOf:
+          - type: string
+            enum:
+            - direct
+            - via_transit
+          - type: 'null'
+          title: Route Mode
       type: object
       title: LogisticsWebDraftScanRequest
     LogisticsWebProfile:
@@ -26591,6 +26877,10 @@ components:
         pending_documents_enabled:
           type: boolean
           title: Pending Documents Enabled
+          default: false
+        transit_routing_enabled:
+          type: boolean
+          title: Transit Routing Enabled
           default: false
         drivers_freshness:
           additionalProperties: true

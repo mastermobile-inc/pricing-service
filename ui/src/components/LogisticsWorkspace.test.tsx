@@ -9,6 +9,8 @@ const zxing = vi.hoisted(() => ({
   decodeFromConstraints: vi.fn(),
   decodeFromImageUrl: vi.fn(),
   stop: vi.fn(),
+  decodeFromCanvas: vi.fn(),
+  getUserMedia: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({
@@ -19,6 +21,7 @@ vi.mock("@zxing/browser", () => ({
   BrowserMultiFormatReader: class {
     decodeFromConstraints = zxing.decodeFromConstraints;
     decodeFromImageUrl = zxing.decodeFromImageUrl;
+    decodeFromCanvas = zxing.decodeFromCanvas;
   },
 }));
 
@@ -78,7 +81,11 @@ const returnsBootstrap = {
 
 describe("LogisticsWorkspace", () => {
   beforeEach(() => {
-    zxing.decodeFromConstraints.mockResolvedValue({ stop: zxing.stop });
+    const track = { stop: zxing.stop, getCapabilities: () => ({}), getSettings: () => ({}) };
+    zxing.getUserMedia.mockResolvedValue({ getTracks: () => [track], getVideoTracks: () => [track] });
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: zxing.getUserMedia, enumerateDevices: vi.fn().mockResolvedValue([]) } });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === "/bitrix/logistics/bootstrap") return { data: bootstrap };
       if (path === "/bitrix/logistics/monitor") return { data: [] };
@@ -144,7 +151,8 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getAllByText("РТУ-90")).toHaveLength(1);
     fireEvent.change(input, { target: { value: "unknown-QR" } });
     fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("документ ещё не загружен");
+    expect(await screen.findByText("QR распознан, документ ещё не загружен")).toBeVisible();
+    expect(input).toHaveValue("unknown-QR");
     expect(screen.getByText("РТУ-90")).toBeVisible();
     expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
   });
@@ -240,19 +248,17 @@ describe("LogisticsWorkspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Открыть камеру" }));
 
     await waitFor(() =>
-      expect(zxing.decodeFromConstraints).toHaveBeenCalledWith(
+      expect(zxing.getUserMedia).toHaveBeenCalledWith(
         {
-          video: { facingMode: { ideal: "environment" } },
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false,
-        },
-        expect.any(HTMLVideoElement),
-        expect.any(Function)
+        }
       )
     );
   });
 
   it("объясняет отказ в доступе к камере без сырого текста браузера", async () => {
-    zxing.decodeFromConstraints.mockRejectedValueOnce(
+    zxing.getUserMedia.mockRejectedValueOnce(
       Object.assign(new Error("Permission denied by system"), { name: "NotAllowedError" })
     );
     vi.mocked(api.post).mockResolvedValueOnce({
@@ -282,7 +288,7 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getByRole("button", { name: "Назад" })).toBeVisible();
     const cancel = screen.getByRole("button", { name: "Отменить сканирование" });
     expect(cancel).toBeVisible();
-    await waitFor(() => expect(zxing.decodeFromConstraints).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Запускаем камеру…")).not.toBeInTheDocument());
 
     fireEvent.click(cancel);
 
@@ -360,7 +366,7 @@ describe("LogisticsWorkspace", () => {
 
     try {
       const view = render(<CameraScanner onCode={onCode} onClose={onClose} />);
-      await waitFor(() => expect(zxing.decodeFromConstraints).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByText("Запускаем камеру…")).not.toBeInTheDocument());
       const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
       expect(fileInput).not.toBeNull();
       fireEvent.change(fileInput!, {

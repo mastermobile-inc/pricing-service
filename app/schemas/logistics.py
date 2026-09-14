@@ -120,7 +120,31 @@ class LogisticsDraftItemRemoveRequest(BaseModel):
     actor_user_id: int
 
 
+class LogisticsRouteOption(BaseModel):
+    mode: Literal["direct", "via_transit"]
+    warehouse_id: int
+    warehouse_name: str
+
+
+class LogisticsDraftRouteRequest(BaseModel):
+    mode: Literal["direct", "via_transit"]
+
+
+class LogisticsRerouteRequest(LogisticsDraftRouteRequest):
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class LogisticsRerouteResponse(BaseModel):
+    status: str
+    version: int
+
+
 class LogisticsDraftItemResponse(BaseModel):
+    final_warehouse_id: int | None = None
+    final_warehouse_name: str | None = None
+    route_options: list[LogisticsRouteOption] = Field(default_factory=list)
     id: int
     transfer_id: int
     barcode: str
@@ -181,6 +205,10 @@ class LogisticsRtuReadyForPickupResponse(BaseModel):
 
 
 class LogisticsMonitorResponse(BaseModel):
+    status_label: str | None = None
+    version: int | None = None
+    final_warehouse_id: int | None = None
+    route_options: list[LogisticsRouteOption] = Field(default_factory=list)
     transfer_id: int
     external_id: str
     source_document_type: str = "transfer"
@@ -271,6 +299,7 @@ class LogisticsDriverChangeRequest(BaseModel):
 
 
 class LogisticsPendingItem(BaseModel):
+    status_label: str | None = None
     transfer_id: int
     document_number: str
     source_document_type: str
@@ -282,6 +311,7 @@ class LogisticsPendingItem(BaseModel):
 
 
 class LogisticsPendingResponse(BaseModel):
+    draft_total_count: int = 0
     items: list[LogisticsPendingItem]
     total: int
     scanned_count: int

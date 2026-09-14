@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -158,6 +159,7 @@ class BitrixLogisticsDraftCreateRequest(BaseModel):
 
 
 class BitrixLogisticsDraftScanRequest(BaseModel):
+    route_mode: Literal["direct", "via_transit"] | None = None
     barcode: str | None = Field(default=None, max_length=255)
     lookup_code: str | None = Field(default=None, max_length=255)
 

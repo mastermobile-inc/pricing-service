@@ -20,14 +20,17 @@ from app.models import LogisticsDraft, LogisticsUser
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
+    LogisticsDraftRouteRequest,
     LogisticsDriverChangeRequest,
     LogisticsMonitorResponse,
     LogisticsPendingResponse,
     LogisticsPhotoInput,
+    LogisticsRerouteRequest,
+    LogisticsRerouteResponse,
     LogisticsUserProfile,
 )
 from app.services import logistics as logistics_service
-from app.services import logistics_drivers, logistics_pending
+from app.services import logistics_drivers, logistics_pending, logistics_routing
 
 router = APIRouter()
 page_router = APIRouter()
@@ -56,6 +59,7 @@ class LogisticsWebDraftCreateRequest(BaseModel):
 class LogisticsWebDraftScanRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=255)
     lookup_code: str | None = Field(default=None, max_length=255)
+    route_mode: Literal["direct", "via_transit"] | None = None
 
 
 class LogisticsWebDraftConfirmRequest(BaseModel):
@@ -242,6 +246,7 @@ def create_web_session(
 
 class LogisticsWebProfile(LogisticsUserProfile):
     pending_documents_enabled: bool = False
+    transit_routing_enabled: bool = False
     drivers_freshness: dict = Field(default_factory=dict)
 
 
@@ -253,6 +258,7 @@ def web_profile(
     return {
         **_profile(actor),
         "pending_documents_enabled": get_settings().logistics_pending_documents_enabled,
+        "transit_routing_enabled": get_settings().logistics_transit_routing_enabled,
         "drivers_freshness": logistics_drivers.freshness(db),
     }
 
@@ -386,6 +392,40 @@ def web_scan_handoff(
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
         dropoff_warehouse_id=None,
+        route_mode=payload.route_mode,
+    )
+
+
+@router.patch(
+    "/handoffs/draft/{draft_id}/items/{item_id}/route", response_model=LogisticsDraftResponse
+)
+def web_change_route(
+    draft_id: int,
+    item_id: int,
+    payload: LogisticsDraftRouteRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    _require_web_role(actor, "sender")
+    _require_web_draft_in_pilot(db, draft_id)
+    return logistics_routing.change_draft_route(
+        db, draft_id=draft_id, item_id=item_id, actor_user_id=actor.id, mode=payload.mode
+    )
+
+
+@router.post("/transfers/{transfer_id}/reroute", response_model=LogisticsRerouteResponse)
+def web_reroute(
+    transfer_id: int,
+    payload: LogisticsRerouteRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    return logistics_routing.reroute(
+        db,
+        transfer_id=transfer_id,
+        actor_user_id=actor.id,
+        source="web_fallback",
+        **payload.model_dump(),
     )
 
 

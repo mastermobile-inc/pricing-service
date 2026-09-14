@@ -49,6 +49,8 @@ def current_warehouse():
 
 
 def destination():
+    if get_settings().logistics_transit_routing_enabled:
+        return Unit.target_warehouse_id
     first = func.coalesce(Unit.document_target_warehouse_id, Unit.target_warehouse_id)
     return case((first == current_warehouse(), Unit.target_warehouse_id), else_=first)
 
@@ -134,6 +136,16 @@ def pending_documents(
             raise HTTPException(409, "Черновик не соответствует выбранной операции или складу")
     target = aliased(LogisticsWarehouse)
     target_id = destination() if operation == "handoff" else State.dropoff_warehouse_id
+    if operation == "handoff" and draft:
+        selected_dropoff = (
+            select(LogisticsDraftItem.dropoff_warehouse_id)
+            .where(
+                LogisticsDraftItem.draft_id == draft.id, LogisticsDraftItem.transfer_id == Unit.id
+            )
+            .correlate(Unit)
+            .scalar_subquery()
+        )
+        target_id = func.coalesce(selected_dropoff, target_id)
     stmt = select(
         Unit.id.label("transfer_id"),
         Unit.document_date,
@@ -143,6 +155,22 @@ def pending_documents(
         target.name.label("dropoff_warehouse_name"),
         State.driver_id,
         LogisticsDriver.full_name.label("driver_name"),
+        case(
+            (
+                and_(
+                    State.status == logistics.STATUS_AT_WAREHOUSE,
+                    State.last_event_type == logistics.EVENT_ACCEPTED_AT_POINT,
+                    State.current_warehouse_id != Unit.target_warehouse_id,
+                    State.current_warehouse_id.in_(
+                        select(LogisticsWarehouse.id).where(
+                            LogisticsWarehouse.kind.in_(["central", "transit"])
+                        )
+                    ),
+                ),
+                "На транзите, ожидает следующей отправки",
+            ),
+            else_=None,
+        ).label("status_label"),
     )
     stmt = stmt.outerjoin(State, State.transfer_id == Unit.id).join(target, target.id == target_id)
     stmt = stmt.outerjoin(LogisticsDriver, LogisticsDriver.id == State.driver_id)
@@ -167,6 +195,10 @@ def pending_documents(
     counts = (
         select(
             func.count().label("total"),
+            select(func.count(LogisticsDraftItem.id))
+            .where(LogisticsDraftItem.draft_id == (draft.id if draft else -1))
+            .scalar_subquery()
+            .label("draft_total_count"),
             func.coalesce(func.sum(case((eligible.c.in_draft, 1), else_=0)), 0).label(
                 "scanned_count"
             ),
@@ -205,6 +237,7 @@ def pending_documents(
             if row["transfer_id"] is not None
         ],
         total=total,
+        draft_total_count=rows[0]["draft_total_count"],
         scanned_count=scanned_count,
         remaining_count=total - scanned_count,
         offset=offset,

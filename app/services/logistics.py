@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.core.config import get_settings
 from app.models import (
     LogisticsDraft,
     LogisticsDraftItem,
@@ -27,7 +28,7 @@ from app.models import (
     LogisticsWarehouse,
 )
 from app.models.logistics import LogisticsDraftAudit
-from app.services import logistics_drivers, site_order_fulfillment
+from app.services import logistics_drivers, logistics_routing, site_order_fulfillment
 
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
@@ -536,11 +537,19 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
         raise _http_error(409, "lookup code is ambiguous")
     if not rows:
         _record_unknown_qr(session, code=code)
+        from app.services.logistics_pending import document_freshness
+
+        parsed = _mm_log_lookup(code)
+        stale = parsed is not None and document_freshness()[parsed[0]]["stale"]
         raise _http_error(
             404,
             (
-                "QR распознан, но документ ещё не загружен. Повторите через минуту"
-                if _mm_log_lookup(code) is not None
+                (
+                    "QR распознан, но документ ещё не загружен. Синхронизация не обновляется; сообщите администратору"
+                    if stale
+                    else "QR распознан, но документ ещё не загружен. Повторите через минуту"
+                )
+                if parsed is not None
                 else "Код не распознан. Отсканируйте QR или штрихкод документа"
             ),
         )
@@ -642,7 +651,7 @@ def _bridge_rtu_receipt_to_order_fulfillment(
         return
     if isinstance(transfer.payload, dict) and transfer.payload.get("external_carrier_flow"):
         return
-    expected_warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
+    expected_warehouse_id = transfer.target_warehouse_id
     if warehouse_id != expected_warehouse_id:
         return
     warehouse = session.get(LogisticsWarehouse, warehouse_id)
@@ -683,6 +692,19 @@ def _bridge_rtu_handoff_to_order_fulfillment(
     if not transfer.site_order_number:
         return
     if isinstance(transfer.payload, dict) and transfer.payload.get("external_carrier_flow"):
+        return
+    if (
+        session.scalar(
+            select(LogisticsTransferEvent.id)
+            .where(
+                LogisticsTransferEvent.transfer_id == transfer.id,
+                LogisticsTransferEvent.event_type == EVENT_HANDED_TO_DRIVER,
+                LogisticsTransferEvent.id < event.id,
+            )
+            .limit(1)
+        )
+        is not None
+    ):
         return
     warehouse = (
         session.get(LogisticsWarehouse, event.warehouse_id)
@@ -869,6 +891,7 @@ def _serialize_draft(draft: LogisticsDraft) -> dict:
     for item in draft.items:
         items.append(
             {
+                **logistics_routing.details(item.transfer, draft.warehouse_id),
                 "id": item.id,
                 "transfer_id": item.transfer_id,
                 "barcode": item.barcode,
@@ -1105,6 +1128,7 @@ def add_scan_to_draft(
     barcode: str | None = None,
     lookup_code: str | None = None,
     dropoff_warehouse_id: int | None = None,
+    route_mode: str | None = None,
 ) -> dict:
     draft = _get_draft_for_update(session, draft_id)
     if draft.status != "open":
@@ -1134,10 +1158,18 @@ def add_scan_to_draft(
                     409,
                     "Документ уже передан водителю и находится в пути",
                 )
-            raise _http_error(409, "Документ недоступен на выбранном складе отправления")
+            actual = state.current_warehouse or transfer.source_warehouse
+            raise _http_error(
+                409,
+                f"Документ недоступен на выбранном складе отправления. Склад отправления: {actual.name}",
+            )
         # The document is the source of truth. Legacy clients may still send
         # dropoff_warehouse_id, but it must never override the 1C direction.
-        target_dropoff = _resolve_handoff_dropoff(session, transfer)
+        target_dropoff = (
+            logistics_routing.destination(session, transfer, draft.warehouse_id, route_mode)
+            if route_mode
+            else _resolve_handoff_dropoff(session, transfer)
+        )
         from app.services.logistics_pending import require_handoff_ready
 
         require_handoff_ready(session, transfer, draft.warehouse_id)
@@ -1316,6 +1348,15 @@ def confirm_draft(
             from app.services.logistics_pending import require_handoff_ready
 
             require_handoff_ready(session, transfer, draft.warehouse_id)
+            allowed = {
+                p["warehouse_id"]
+                for p in logistics_routing.choices(session, transfer, draft.warehouse_id)
+            }
+            allowed.add(_resolve_handoff_dropoff(session, transfer))
+            if item.dropoff_warehouse_id not in allowed:
+                raise _http_error(
+                    409, "Направление изменилось или выключено. Обновите маршрут документа"
+                )
             if (
                 state.status != STATUS_AT_WAREHOUSE
                 or state.current_warehouse_id != draft.warehouse_id
@@ -1361,7 +1402,33 @@ def confirm_draft(
                 state.status != STATUS_IN_TRANSIT
                 or state.dropoff_warehouse_id != draft.warehouse_id
             ):
-                raise _http_error(409, "transfer is not expected on this warehouse")
+                expected = (
+                    state.dropoff_warehouse.name
+                    if state.dropoff_warehouse
+                    else "уже выполнена приёмка"
+                )
+                raise _http_error(
+                    409,
+                    f"Маршрут или состояние изменились. Текущая точка: {expected}. Черновик сохранён",
+                )
+            if (
+                session.scalar(
+                    select(LogisticsTransferEvent.id)
+                    .where(
+                        LogisticsTransferEvent.transfer_id == transfer.id,
+                        LogisticsTransferEvent.event_type.in_(
+                            ["route_dropoff_changed", EVENT_HANDED_TO_DRIVER]
+                        ),
+                        LogisticsTransferEvent.event_at > item.scan_at,
+                    )
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise _http_error(
+                    409,
+                    "Маршрут изменился после сканирования. Удалите позицию и отсканируйте заново; черновик сохранён",
+                )
             event = LogisticsTransferEvent(
                 transfer_id=transfer.id,
                 event_type=EVENT_ACCEPTED_AT_POINT,
@@ -1607,6 +1674,17 @@ def list_monitor(
                 )
     payload = []
     driver_filter = driver_id
+    leg_sources = {}
+    if transfer_ids and get_settings().logistics_transit_routing_enabled:
+        for event in session.scalars(
+            select(LogisticsTransferEvent)
+            .where(
+                LogisticsTransferEvent.transfer_id.in_(transfer_ids),
+                LogisticsTransferEvent.event_type == EVENT_HANDED_TO_DRIVER,
+            )
+            .order_by(LogisticsTransferEvent.id.desc())
+        ):
+            leg_sources.setdefault(event.transfer_id, event.warehouse_id)
     for transfer in rows:
         state = transfer.state
         if state is None:
@@ -1686,6 +1764,27 @@ def list_monitor(
                 "target_warehouse_name": transfer.target_warehouse.name,
                 "final_recipient_name": transfer.final_recipient_name,
                 "status": status_value,
+                "status_label": (
+                    "На транзите, ожидает следующей отправки"
+                    if state
+                    and status_value == STATUS_AT_WAREHOUSE
+                    and state.current_warehouse
+                    and state.current_warehouse.kind in {"transit", "central"}
+                    and current_warehouse_id != transfer.target_warehouse_id
+                    and state.last_event_type == EVENT_ACCEPTED_AT_POINT
+                    else (
+                        "В пути"
+                        if status_value == STATUS_IN_TRANSIT
+                        else "На складе" if status_value == STATUS_AT_WAREHOUSE else status_value
+                    )
+                ),
+                "version": state.version if state else None,
+                "final_warehouse_id": transfer.target_warehouse_id,
+                "route_options": (
+                    logistics_routing.choices(session, transfer, leg_sources.get(transfer.id))
+                    if status_value == STATUS_IN_TRANSIT
+                    else []
+                ),
                 "current_warehouse_name": current_warehouse_name,
                 "dropoff_warehouse_name": dropoff_warehouse_name,
                 "driver_name": driver_name,

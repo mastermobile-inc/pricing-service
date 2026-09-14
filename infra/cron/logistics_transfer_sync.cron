@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+# Install only after addressed dry-run and enabling LOGISTICS_TRANSFER_SYNC_ENABLED.
+* * * * * root LOGISTICS_TRANSFER_SYNC_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/logistics_transfer_sync.sh
+* * * * * root /opt/MM/pricing-service-task43-current/infra/cron/logistics_transfer_sync_watchdog.sh >> /var/log/pricing/logistics_transfer_sync_watchdog.log 2>&1

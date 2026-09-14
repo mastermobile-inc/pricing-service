@@ -645,11 +645,19 @@ class Settings(BaseSettings):
     logistics_driver_bitrix_webhook_url: str | None = None
     logistics_driver_bitrix_webhook_env_file: str | None = None
     logistics_pending_documents_enabled: bool = False
+    logistics_transit_routing_enabled: bool = False
+    logistics_central_transit_external_id: str | None = None
+    logistics_transit_source_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_transfer_sync_enabled: bool = False
     logistics_sync_freshness_seconds: int = Field(default=180, ge=60)
     logistics_rtu_sync_success_file: str = (
         "/var/lib/pricing-service/logistics_rtu_sync.last_success"
     )
-    logistics_transfer_sync_success_file: str | None = None
+    logistics_transfer_sync_success_file: str | None = (
+        "/var/lib/pricing-service/logistics_transfer_sync.last_success"
+    )
     logistics_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
     logistics_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list
@@ -926,6 +934,7 @@ class Settings(BaseSettings):
         "logistics_bitrix_allowed_domains",
         "logistics_bitrix_allowed_member_ids",
         "logistics_stage_pilot_warehouse_external_ids",
+        "logistics_transit_source_external_ids",
         "pickup_ready_sms_pilot_warehouse_external_ids",
         "customer_return_service_links_roles",
         mode="before",

@@ -1,25 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { logisticsApi as api } from "../api/logistics";
 
 export type Pending = {
+  draft_total_count?: number;
   total: number; scanned_count: number; remaining_count: number;
   freshness: Record<string, { stale: boolean }>;
   drivers: Array<{ id: number; full_name: string }>;
-  items: Array<{ transfer_id: number; document_number: string; dropoff_warehouse_name: string; in_draft: boolean }>;
+  items: Array<{ transfer_id: number; document_number: string; dropoff_warehouse_name: string; in_draft: boolean; status_label?: string | null }>;
 };
 
 export type PendingLoader = (params: Record<string, string | number | undefined>, signal: AbortSignal) => Promise<Pending>;
 const loadBitrix: PendingLoader = async (params, signal) => (await api.get<Pending>("/bitrix/logistics/pending-documents", { params, signal })).data;
 
-export function LogisticsPendingPanel({ operation, warehouseId, draftId, revision, load = loadBitrix }: {
+export function LogisticsPendingPanel({ operation, warehouseId, draftId, revision, updating = false, load = loadBitrix }: {
   operation: "handoff" | "receipt"; warehouseId: number; draftId?: number; revision: unknown;
   load?: PendingLoader;
+  updating?: boolean;
 }) {
-  const [page, setPage] = useState<Pending | null>(null);
   const [offset, setOffset] = useState(0);
   const [driverId, setDriverId] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState("");
+  const request = useMemo(() => ({ operation, warehouseId, draftId, revision, offset, driverId, attempt, load, updating }),
+    [operation, warehouseId, draftId, revision, offset, driverId, attempt, load, updating]);
+  const [snapshot, setSnapshot] = useState<{ request: typeof request; page?: Pending; error?: string } | null>(null);
+  const page = !updating && snapshot?.request === request ? snapshot.page : null;
+  const error = !updating && snapshot?.request === request ? snapshot.error : "";
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "hidden") setAttempt(n => n + 1);
@@ -28,17 +33,16 @@ export function LogisticsPendingPanel({ operation, warehouseId, draftId, revisio
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    setPage(null);
-    setError("");
-    load({ operation, warehouse_id: warehouseId, draft_id: draftId, limit: 20, offset,
-        driver_id: driverId ? Number(driverId) : undefined }, controller.signal
+    if (request.updating) return () => controller.abort();
+    request.load({ operation: request.operation, warehouse_id: request.warehouseId, draft_id: request.draftId, limit: 20, offset: request.offset,
+        driver_id: request.driverId ? Number(request.driverId) : undefined }, controller.signal
     ).then((data) => { if (!controller.signal.aborted) {
-      if (offset > 0 && offset >= data.total) setOffset(0);
-      else setPage(data);
+      if (request.offset > 0 && request.offset >= data.total) setOffset(0);
+      else setSnapshot({ request, page: data });
     } })
-      .catch(() => { if (!controller.signal.aborted) setError("Не удалось обновить список. Он может быть неполным."); });
+      .catch(() => { if (!controller.signal.aborted) setSnapshot({ request, error: "Не удалось обновить список. Он может быть неполным." }); });
     return () => controller.abort();
-  }, [operation, warehouseId, draftId, revision, offset, driverId, attempt, load]);
+  }, [request]);
   const handoff = operation === "handoff";
   return <section className="logistics-card" aria-label="Оставшиеся документы">
     <h3>{handoff ? "Готовы к передаче" : "Ещё ожидаются"}</h3>
@@ -52,7 +56,8 @@ export function LogisticsPendingPanel({ operation, warehouseId, draftId, revisio
           {page.drivers.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
         </select>
       </label>}
-      <p>Всего: {page.total} · Добавлено в черновик: {page.scanned_count} · Осталось: {page.remaining_count}</p>
+      <p>Всего по фильтру: {page.total} · Добавлено по фильтру: {page.scanned_count} · Осталось: {page.remaining_count}</p>
+      {draftId && <p>Всего документов в черновике: {page.draft_total_count ?? page.scanned_count}</p>}
       {draftId && !driverId && <p>{handoff ? "Передаёте" : "Принимаете"} {page.scanned_count} документов.
         {handoff ? " На складе остаются" : " Ещё ожидаются"} {page.remaining_count}. Можно подтвердить часть.</p>}
       {!handoff && <p>Остаток — ещё не принятые документы, это не подтверждение потери груза.</p>}
@@ -61,6 +66,7 @@ export function LogisticsPendingPanel({ operation, warehouseId, draftId, revisio
       {page.items.length === 0 && <p>На этой странице документов нет.</p>}
       <ul>{page.items.map(row => <li key={row.transfer_id}>
         {row.document_number} → {row.dropoff_warehouse_name} — {row.in_draft ? "В черновике" : "Ожидает сканирования"}
+        {row.status_label && <small>{row.status_label}</small>}
       </li>)}</ul>
       <button className="btn btn--ghost" type="button" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 20))}>Предыдущие</button>
       <button className="btn btn--ghost" type="button" disabled={offset + 20 >= page.total} onClick={() => setOffset(offset + 20)}>Следующие</button>

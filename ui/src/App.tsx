@@ -3,6 +3,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import toast from "react-hot-toast";
 import { MatchingLayout } from "./components/MatchingLayout";
 import { LogisticsPendingPanel, type PendingLoader } from "./components/LogisticsPendingPanel";
+import { useLogisticsScanQueue } from "./components/useLogisticsScanQueue";
+import { DraftRouteControl, LogisticsRerouteDialog, type RoutedItem, type RerouteItem } from "./components/LogisticsRouteControls";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
@@ -172,6 +174,7 @@ const isReceivablesWorkplaceRoute = () => window.location.pathname.startsWith("/
 const isExecutiveDashboardRoute = () => window.location.pathname.startsWith("/executive-dashboard");
 
 type LogisticsProfile = {
+  transit_routing_enabled?: boolean;
   pending_documents_enabled?: boolean;
   drivers_freshness?: { stale: boolean };
   id: number;
@@ -201,7 +204,7 @@ type LogisticsDraft = {
   warehouse_id: number;
   driver_id: number | null;
   item_count: number;
-  items: Array<{
+  items: Array<RoutedItem & {
     id: number;
     barcode: string;
     lookup_code?: string | null;
@@ -210,7 +213,8 @@ type LogisticsDraft = {
   }>;
 };
 
-type LogisticsMonitorItem = {
+type LogisticsMonitorItem = RerouteItem & {
+  status_label?: string | null;
   transfer_id: number;
   source_document_type: string;
   document_number: string;
@@ -292,12 +296,28 @@ export function LogisticsFallbackApp() {
   const [comment, setComment] = useState("");
   const [draft, setDraft] = useState<LogisticsDraft | null>(null);
   const [monitor, setMonitor] = useState<LogisticsMonitorItem[]>([]);
+  const [rerouteItem, setRerouteItem] = useState<LogisticsMonitorItem | null>(null);
+  const monitorRequestId = useRef(0);
   const [message, setMessage] = useState("Загрузка...");
   const [messageError, setMessageError] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const operationInFlight = useRef(false);
+  const scanQueue = useLogisticsScanQueue<LogisticsDraft>({
+    locked: operationInFlight,
+    process: async code => {
+      if (!draft) throw new Error("Сначала откройте черновик");
+      const handoff = draft.draft_type === "handoff";
+      return logisticsFetch<LogisticsDraft>(`/${handoff ? "handoffs" : "receipts"}/draft/${draft.id}/scan`, {
+        method: "POST", body: JSON.stringify({ lookup_code: code,
+          ...(handoff && profile?.transit_routing_enabled ? { route_mode: "direct" } : {}) }),
+      });
+    },
+    success: data => { setDraft(data); setMessageError(false); setMessage(data.scan_result === "already_scanned" ? "Документ уже добавлен" : "Документ добавлен"); },
+    failure: (code, error) => { setScanCode(current => current || code); setMessageError(true); setMessage(error instanceof Error ? error.message : "Ошибка скана"); },
+  });
+  const operationBusy = busy || scanQueue.count > 0;
 
   const groupedFallbackDraft = useMemo(() => {
     const groups: Record<string, LogisticsDraft["items"]> = {};
@@ -329,10 +349,11 @@ export function LogisticsFallbackApp() {
   }, []);
 
   const refreshMonitorForWarehouse = useCallback(async (effectiveWarehouseId: string) => {
+    const requestId = ++monitorRequestId.current;
     const params = new URLSearchParams();
     if (effectiveWarehouseId) params.set("warehouse_id", effectiveWarehouseId);
     const data = await logisticsFetch<LogisticsMonitorItem[]>(`/monitor?${params.toString()}`);
-    setMonitor(data);
+    if (requestId === monitorRequestId.current) setMonitor(data);
   }, []);
 
   const refreshMonitor = useCallback(
@@ -394,7 +415,7 @@ export function LogisticsFallbackApp() {
   }, [bootstrapAttempt, refreshMonitorForWarehouse]);
 
   const runOperation = async (action: () => Promise<void>, fallbackMessage: string) => {
-    if (operationInFlight.current) return;
+    if (operationInFlight.current || scanQueue.count > 0) return;
     operationInFlight.current = true;
     setBusy(true);
     setMessageError(false);
@@ -437,17 +458,17 @@ export function LogisticsFallbackApp() {
   const scanDraft = (overrideCode?: string) => {
     const code = (overrideCode || scanCode).trim();
     if (!draft || !code) return Promise.resolve();
-    return runOperation(async () => {
-      const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
-      const data = await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/scan`, {
-        method: "POST",
-        body: JSON.stringify({ lookup_code: code }),
-      });
-      setDraft(data);
-      setScanCode("");
-      setMessage(data.scan_result === "already_scanned" ? "Документ уже добавлен" : "Документ добавлен");
-    }, "Ошибка скана");
+    scanQueue.enqueue(code);
+    setScanCode("");
   };
+
+  const changeRoute = (itemId: number, mode: string) => void runOperation(async () => {
+    if (!draft) return;
+    const data = await logisticsFetch<LogisticsDraft>(`/handoffs/draft/${draft.id}/items/${itemId}/route`, {
+      method: "PATCH", body: JSON.stringify({ mode }),
+    });
+    setDraft(data); setMessage("Точка сдачи изменена. Документы сохранены");
+  }, "Не удалось изменить маршрут");
 
   const confirmDraft = () => {
     if (!draft || !draft.item_count) return Promise.resolve();
@@ -608,10 +629,11 @@ export function LogisticsFallbackApp() {
                 <input
                   className="app__search"
                   value={scanCode}
+                  ref={scanQueue.inputRef}
                   maxLength={255}
                   onChange={(e) => setScanCode(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void scanDraft();
+                    if (e.key === "Enter") { e.preventDefault(); void scanDraft(e.currentTarget.value); }
                   }}
                   placeholder="QR или штрихкод"
                 />
@@ -627,7 +649,7 @@ export function LogisticsFallbackApp() {
                 {message && <p className={`logistics__message${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>{message}</p>}
                 {profile.pending_documents_enabled && warehouseId && <LogisticsPendingPanel
                   key={`${mode}:${warehouseId}:${draft.id}`} operation={mode}
-                  warehouseId={Number(warehouseId)} draftId={draft.id} revision={draft} load={loadFallbackPending}
+                  warehouseId={Number(warehouseId)} draftId={draft.id} revision={draft} updating={operationBusy} load={loadFallbackPending}
                 />}
                 <div className="logistics__actions">
                   <button
@@ -639,16 +661,19 @@ export function LogisticsFallbackApp() {
                   </button>
                   <button
                     className="btn btn--ghost"
-                    disabled={busy || !draft.item_count}
+                    disabled={operationBusy || !draft.item_count}
                     onClick={confirmDraft}
                   >
                     Подтвердить
                   </button>
-                  <button className="btn btn--ghost" disabled={busy} onClick={cancelDraft}>
+                  <button className="btn btn--ghost" disabled={operationBusy} onClick={cancelDraft}>
                     Отменить черновик
                   </button>
                 </div>
                 <p>Добавлено документов: {draft.item_count}</p>
+                <p>Внешний 2D-сканер: подключите как клавиатуру, окончание ввода — Enter.</p>
+                {scanQueue.count > 0 && <p role="status">В очереди сканирования: {scanQueue.count}</p>}
+                {scanQueue.failed.length > 0 && <p role="alert">Не добавлены: {scanQueue.failed.join(", ")}. Повторите эти сканы после проверки.</p>}
                 {!draft.item_count && <p>Добавьте хотя бы один документ для подтверждения</p>}
                 {Object.entries(groupedFallbackDraft).map(([destination, items]) => <section key={destination}><h3>{destination}</h3><ul>
                   {items.map((item) => (
@@ -664,6 +689,7 @@ export function LogisticsFallbackApp() {
                       >
                         Удалить
                       </button>
+                      {draft.draft_type === "handoff" && <DraftRouteControl item={item} disabled={operationBusy} onChange={value => changeRoute(item.id, value)} />}
                     </li>
                   ))}
                 </ul></section>)}
@@ -728,15 +754,22 @@ export function LogisticsFallbackApp() {
               {monitor.map((item) => (
                 <tr key={item.transfer_id}>
                   <td>{item.document_number}</td>
-                  <td>{item.status}</td>
+                  <td>{item.status_label || item.status}</td>
                   <td>{item.dropoff_warehouse_name || item.current_warehouse_name || ""}</td>
-                  <td>{item.route_name || ""}</td>
+                  <td>{item.route_name || ""}
+                    {profile?.role === "admin" && profile.transit_routing_enabled && item.status === "in_transit" && !!item.route_options?.length &&
+                      <button className="btn btn--ghost" onClick={() => setRerouteItem(item)}>Изменить точку сдачи</button>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </section>
       </main>
+      {rerouteItem && <LogisticsRerouteDialog item={rerouteItem}
+        submit={payload => logisticsFetch(`/transfers/${rerouteItem.transfer_id}/reroute`, { method: "POST", body: JSON.stringify(payload) })}
+        onDone={() => { setRerouteItem(null); void refreshMonitor(); setMessage("Точка сдачи изменена; выполните фактическую приёмку на новом складе"); }}
+        onClose={() => { setRerouteItem(null); void refreshMonitor(); }} />}
       {cameraOpen && (
         <CameraScanner
           onCode={(code) => {
