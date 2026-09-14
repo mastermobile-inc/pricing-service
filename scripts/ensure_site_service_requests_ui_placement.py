@@ -14,6 +14,28 @@ PLACEMENT = "CRM_DYNAMIC_1134_DETAIL_TAB"
 TITLE = "Переписка с клиентом"
 APP_ACCESS_TOKEN_ENV = "SITE_SERVICE_REQUESTS_UI_BITRIX_APP_ACCESS_TOKEN"
 
+# Карточка обращения держит несколько вкладок одного приложения: переписку и
+# возврат. Каждая вкладка — отдельная привязка с собственным обработчиком, поэтому
+# чужие привязки на этом placement не считаются конфликтом.
+SCREENS: dict[str, dict[str, str]] = {
+    "conversation": {
+        "path": "",
+        "title": TITLE,
+        "description": "Диалог с клиентом по обращению сайта",
+        "description_ru": "Переписка по обращению сайта",
+        "title_en": "Customer conversation",
+        "description_en": "Site request chat",
+    },
+    "returns": {
+        "path": "returns/",
+        "title": "Возврат товара",
+        "description": "Возврат по обращению в реестре логистики",
+        "description_ru": "Возврат по обращению: трек и состояние посылки",
+        "title_en": "Customer return",
+        "description_en": "Return shipment for the site request",
+    },
+}
+
 
 class _JsonApi(Protocol):
     def call_json(self, method: str, payload: dict[str, object]) -> dict[str, object]: ...
@@ -93,11 +115,27 @@ def _placements(api: _JsonApi) -> list[dict[str, object]]:
     return result
 
 
-def ensure(*, apply: bool, api: _JsonApi, handler: str) -> dict[str, object]:
-    handler = handler.strip()
+def _screen_handler(handler: str, screen: str) -> str:
+    suffix = SCREENS[screen]["path"]
+    if not suffix:
+        return handler
+    return _normalized_url(handler) + suffix
+
+
+def ensure(
+    *,
+    apply: bool,
+    api: _JsonApi,
+    handler: str,
+    screen: str = "conversation",
+) -> dict[str, object]:
+    if screen not in SCREENS:
+        raise RuntimeError("site_service_requests_ui_screen_unknown")
+    handler = _screen_handler(handler.strip(), screen)
     if not handler:
         raise RuntimeError("site_service_requests_ui_placement_not_configured")
     normalized_handler = _normalized_url(handler)
+    screen_config = SCREENS[screen]
 
     def matches(item: dict[str, object]) -> bool:
         placement = item.get("placement") or item.get("PLACEMENT")
@@ -113,7 +151,7 @@ def ensure(*, apply: bool, api: _JsonApi, handler: str) -> dict[str, object]:
         item for item in before if (item.get("placement") or item.get("PLACEMENT")) == PLACEMENT
     ]
     matching_rows = [item for item in placement_rows if matches(item)]
-    if len(matching_rows) > 1 or (placement_rows and not matching_rows):
+    if len(matching_rows) > 1:
         raise RuntimeError("site_service_requests_ui_placement_conflict")
     already_bound = len(matching_rows) == 1
     if apply and not already_bound:
@@ -122,11 +160,17 @@ def ensure(*, apply: bool, api: _JsonApi, handler: str) -> dict[str, object]:
             {
                 "PLACEMENT": PLACEMENT,
                 "HANDLER": handler,
-                "TITLE": TITLE,
-                "DESCRIPTION": "Диалог с клиентом по обращению сайта",
+                "TITLE": screen_config["title"],
+                "DESCRIPTION": screen_config["description"],
                 "LANG_ALL": {
-                    "ru": {"TITLE": TITLE, "DESCRIPTION": "Переписка по обращению сайта"},
-                    "en": {"TITLE": "Customer conversation", "DESCRIPTION": "Site request chat"},
+                    "ru": {
+                        "TITLE": screen_config["title"],
+                        "DESCRIPTION": screen_config["description_ru"],
+                    },
+                    "en": {
+                        "TITLE": screen_config["title_en"],
+                        "DESCRIPTION": screen_config["description_en"],
+                    },
                 },
             },
         )
@@ -137,10 +181,12 @@ def ensure(*, apply: bool, api: _JsonApi, handler: str) -> dict[str, object]:
         raise RuntimeError("site_service_requests_placement_readback_failed")
     return {
         "placement": PLACEMENT,
+        "screen": screen,
         "handler": handler,
         "alreadyBound": already_bound,
         "bound": bound,
         "applied": apply,
+        "otherTabs": len(placement_rows) - len(matching_rows),
     }
 
 
@@ -150,6 +196,12 @@ def main() -> int:
     parser.add_argument(
         "--handler",
         help="Public HTTPS handler. Defaults to SITE_SERVICE_REQUESTS_UI_HANDLER_URL.",
+    )
+    parser.add_argument(
+        "--screen",
+        choices=sorted(SCREENS),
+        default="conversation",
+        help="Card tab to bind: conversation (default) or returns.",
     )
     args = parser.parse_args()
     settings = get_settings()
@@ -161,7 +213,7 @@ def main() -> int:
     )
     print(
         json.dumps(
-            ensure(apply=args.apply, api=api, handler=handler),
+            ensure(apply=args.apply, api=api, handler=handler, screen=args.screen),
             ensure_ascii=False,
             indent=2,
         )

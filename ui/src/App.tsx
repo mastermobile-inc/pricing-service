@@ -81,6 +81,11 @@ const CustomerPriceTypesWorkspace = lazy(async () => {
   const module = await import("./components/CustomerPriceTypesWorkspace");
   return { default: module.CustomerPriceTypesWorkspace };
 });
+const SiteServiceRequestReturns = lazy(async () => {
+  const module = await import("./components/SiteServiceRequestReturns");
+  return { default: module.SiteServiceRequestReturns };
+});
+
 const SiteServiceRequestConversation = lazy(async () => {
   const module = await import("./components/SiteServiceRequestConversation");
   return { default: module.SiteServiceRequestConversation };
@@ -1560,6 +1565,10 @@ function App() {
   );
 }
 
+function isSiteServiceRequestReturnsScreen() {
+  return window.location.pathname.replace(/\/+$/, "").endsWith("/returns");
+}
+
 function SiteServiceRequestsBitrixApp() {
   const [state, setState] = useState<
     | { status: "loading" }
@@ -1588,13 +1597,17 @@ function SiteServiceRequestsBitrixApp() {
     return (
       <div className="app app--center">
         <div className="app-state app-state--wide">
-          <h1>Переписка с клиентом</h1>
-          {state.status === "loading" ? <p>Подключение к Bitrix24…</p> : <><p>Нет доступа к переписке.</p><small>{state.message}</small></>}
+          <h1>{isSiteServiceRequestReturnsScreen() ? "Возврат товара" : "Переписка с клиентом"}</h1>
+          {state.status === "loading" ? <p>Подключение к Bitrix24…</p> : <><p>Нет доступа к карточке.</p><small>{state.message}</small></>}
         </div>
       </div>
     );
   }
-  return <SiteServiceRequestConversation itemId={state.itemId} />;
+  return isSiteServiceRequestReturnsScreen() ? (
+    <SiteServiceRequestReturns itemId={state.itemId} />
+  ) : (
+    <SiteServiceRequestConversation itemId={state.itemId} />
+  );
 }
 
 export default App;

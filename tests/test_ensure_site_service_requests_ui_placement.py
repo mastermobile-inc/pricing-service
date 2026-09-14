@@ -45,13 +45,16 @@ def test_placement_dry_run_accepts_one_exact_binding():
     assert [method for method, _payload in api.calls] == ["placement.get"]
 
 
-def test_placement_refuses_conflicting_handler():
+def test_placement_refuses_duplicate_binding_of_the_same_tab():
+    """Две привязки одной вкладки — конфликт: какая из них откроется, непредсказуемо."""
+
     api = _Api(
         [
+            {"PLACEMENT": placement.PLACEMENT, "HANDLER": HANDLER},
             {
                 "PLACEMENT": placement.PLACEMENT,
-                "HANDLER": "https://old.example/bitrix/site-service-requests/",
-            }
+                "HANDLER": "https://pricing.example/bitrix/site-service-requests",
+            },
         ]
     )
 
@@ -61,6 +64,22 @@ def test_placement_refuses_conflicting_handler():
     assert [method for method, _payload in api.calls] == ["placement.get"]
 
 
+def test_placement_keeps_the_other_card_tab_untouched():
+    """Вкладка возврата встаёт рядом с перепиской, а не вместо неё."""
+
+    api = _Api([{"PLACEMENT": placement.PLACEMENT, "HANDLER": HANDLER}])
+
+    result = placement.ensure(apply=True, api=api, handler=HANDLER, screen="returns")
+
+    assert result["handler"] == HANDLER + "returns/"
+    assert result["screen"] == "returns"
+    assert result["bound"] is True
+    assert result["otherTabs"] == 1
+    bind_payload = next(payload for method, payload in api.calls if method == "placement.bind")
+    assert bind_payload["TITLE"] == "Возврат товара"
+    assert {row["HANDLER"] for row in api.rows} == {HANDLER, HANDLER + "returns/"}
+
+
 def test_placement_apply_binds_then_reads_back():
     api = _Api([])
 
@@ -68,10 +87,12 @@ def test_placement_apply_binds_then_reads_back():
 
     assert result == {
         "placement": placement.PLACEMENT,
+        "screen": "conversation",
         "handler": HANDLER,
         "alreadyBound": False,
         "bound": True,
         "applied": True,
+        "otherTabs": 0,
     }
     assert [method for method, _payload in api.calls] == [
         "placement.get",

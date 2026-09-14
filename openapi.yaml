@@ -8087,6 +8087,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/returns:
+    get:
+      summary: Item Returns
+      description: Возвраты этого обращения для вкладки карточки.
+      operationId: item_returns_api_site_service_requests_ui_items__item_id__returns_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestReturnsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Register Item Return
+      description: 'Регистрирует возврат из карточки обращения и привязывает его к ней.
+
+
+        Реестр возвратов остаётся единственным местом хранения: карточка только
+
+        заводит запись и показывает её состояние, чтобы менеджер не переписывал трек
+
+        в поля обращения и не заводил вторую запись про ту же посылку.'
+      operationId: register_item_return_api_site_service_requests_ui_items__item_id__returns_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestReturnCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestReturnsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/card-balance-reconciliation/events:
     get:
       summary: List Events
@@ -37098,6 +37164,41 @@ components:
       - clientRequestId
       - text
       title: SiteServiceRequestInternalNoteRequest
+    SiteServiceRequestReturnCreateRequest:
+      properties:
+        carrier:
+          type: string
+          enum:
+          - russian_post
+          - cdek
+          title: Carrier
+        trackingNumber:
+          type: string
+          maxLength: 64
+          minLength: 5
+          title: Trackingnumber
+      type: object
+      required:
+      - carrier
+      - trackingNumber
+      title: SiteServiceRequestReturnCreateRequest
+      description: Оформление возврата из карточки обращения.
+    SiteServiceRequestReturnsResponse:
+      properties:
+        canRegister:
+          type: boolean
+          title: Canregister
+        returns:
+          items:
+            $ref: '#/components/schemas/CustomerReturnShipmentResponse'
+          type: array
+          title: Returns
+      type: object
+      required:
+      - canRegister
+      - returns
+      title: SiteServiceRequestReturnsResponse
+      description: Возвраты обращения для вкладки карточки.
     SiteServiceRequestSnapshotAcceptedResponse:
       properties:
         ticketId:

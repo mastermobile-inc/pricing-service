@@ -235,3 +235,122 @@ def test_ui_email_conversation_stays_on_timeline_channel(client, db_session):
     assert conversation.json()["ticketId"] is None
     assert conversation.json()["canReply"] is False
     assert conversation.json()["canAttachFiles"] is False
+
+
+def _service_request_link(item_id: int = 391):
+    from app.services.customer_returns import CustomerReturnServiceRequestLink
+
+    return CustomerReturnServiceRequestLink(
+        item_id=item_id,
+        title=f"Тикет сайта #{item_id}",
+        stage_id="DT1134_55:PREPARATION",
+        stage_name="В работе / уточнение",
+        closed=False,
+        deal_id=None,
+        order_ref="236342",
+        site_ticket_id="746",
+        responsible_user_id=131016,
+        responsible_name="Тимур Тибилов",
+    )
+
+
+def test_returns_tab_registers_and_links_return_to_the_card(client, db_session, monkeypatch):
+    """Возврат из карточки попадает в реестр уже привязанным к обращению."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session):
+        empty = client.get("/api/site-service-requests/ui/items/391/returns")
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-UI-3223"},
+        )
+        listed = client.get("/api/site-service-requests/ui/items/391/returns")
+
+    assert empty.status_code == 200
+    assert empty.json() == {"canRegister": True, "returns": []}
+    assert created.status_code == 201
+    shipment = created.json()["returns"][0]
+    assert shipment["tracking_number"] == "CDEK-UI-3223"
+    assert shipment["status"] == "registered"
+    assert shipment["bitrix_case_id"] == "391"
+    assert shipment["site_ticket_id"] == "746"
+    assert shipment["service_request_item_id"] == 391
+    assert listed.json()["returns"][0]["id"] == shipment["id"]
+
+
+def test_returns_tab_does_not_duplicate_the_same_parcel(client, db_session, monkeypatch):
+    """Повторная регистрация того же трека не заводит вторую запись."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session):
+        first = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-UI-DOUBLE"},
+        )
+        second = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-UI-DOUBLE"},
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert len(second.json()["returns"]) == 1
+
+
+def test_returns_tab_is_read_only_without_write_rights(client, db_session, monkeypatch):
+    """Без права записи вкладка показывает возвраты, но не даёт их заводить."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session, write_allowed_user_ids=[]):
+        listed = client.get("/api/site-service-requests/ui/items/391/returns")
+        denied = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-UI-READONLY"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json()["canRegister"] is False
+    assert denied.status_code == 403
+
+
+def test_returns_tab_keeps_other_cards_out_of_scope(client, db_session, monkeypatch):
+    """Вкладка одной карточки не показывает и не заводит возвраты другой."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session):
+        foreign_list = client.get("/api/site-service-requests/ui/items/392/returns")
+        foreign_create = client.post(
+            "/api/site-service-requests/ui/items/392/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-UI-FOREIGN"},
+        )
+
+    assert foreign_list.status_code == 403
+    assert foreign_create.status_code == 403
