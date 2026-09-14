@@ -904,8 +904,8 @@ documents:
     status: active
     owner: engineering
     source_of_truth: true
-    related_code: [app/api/order_fulfillment.py, app/services/order_assembly_queue.py, app/models/order_assembly_queue.py, tasks/reconcile_onec_assembly_to_crm.py, alembic/versions/a4c5e6f70819_add_order_assembly_queue.py]
-    related_tests: [tests/test_order_assembly_queue.py, tests/test_reconcile_onec_assembly_to_crm.py]
+    related_code: [app/api/order_assembly_readonly.py, app/api/order_fulfillment.py, app/services/order_assembly_queue.py, app/models/order_assembly_queue.py, tasks/reconcile_onec_assembly_to_crm.py, alembic/versions/a4c5e6f70819_add_order_assembly_queue.py]
+    related_tests: [tests/test_order_assembly_readonly.py, tests/test_order_assembly_queue.py, tests/test_reconcile_onec_assembly_to_crm.py]
     keywords: [order-assembly, queue, crm, bitrix24, 1c, customer-order, executing, fail-closed, contract, сборка, очередь]
   - path: docs/IntegrationContract.CustomerOrderClosureQueue1C.md
     title: Pricing Service to UT 10.3 Customer Order Closure Queue Contract

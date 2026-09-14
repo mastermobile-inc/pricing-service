@@ -25,6 +25,21 @@ CRM_ASSEMBLY_URGENT_REASON_FIELD = "UF_CRM_MM_ASSEMBLY_URGENT_REASON"
 CRM_ASSEMBLY_URGENT_UNTIL_FIELD = "UF_CRM_MM_ASSEMBLY_URGENT_UNTIL"
 SYNC_SOURCE = "bitrix_deal"
 
+
+class ReadOnlyAssemblyClient:
+    """Permit only the CRM read operation needed by the assembly snapshot."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if method != "crm.deal.list":
+            raise ValueError("assembly_queue_read_only_method_required")
+        if not params or params.get("filter") != {"=STAGE_ID": ASSEMBLY_STAGE_ID}:
+            raise ValueError("assembly_queue_executing_filter_required")
+        return self._client.call(method, params)
+
+
 CRM_SELECT_FIELDS = (
     "ID",
     "STAGE_ID",

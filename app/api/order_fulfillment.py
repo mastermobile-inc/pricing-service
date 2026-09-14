@@ -91,7 +91,9 @@ def get_assembly_queue(
             media_type="application/xml",
         )
 
-    client = fulfillment.BitrixChatClient(settings.order_fulfillment_bitrix_webhook_url)
+    client = assembly_queue.ReadOnlyAssemblyClient(
+        fulfillment.BitrixChatClient(settings.order_fulfillment_bitrix_webhook_url)
+    )
     try:
         snapshot = assembly_queue.sync_assembly_queue(
             db,
