@@ -34,7 +34,7 @@ it("не подменяет свежий остаток запоздавшим �
     .mockResolvedValue({ ...page, total: 2, scanned_count: 1, remaining_count: 1 });
   const ui = render(<LogisticsPendingPanel operation="handoff" warehouseId={1} revision={1} load={load} />);
   ui.rerender(<LogisticsPendingPanel operation="handoff" warehouseId={1} revision={2} load={load} />);
-  expect(await screen.findByText(/Всего: 2 ·/)).toBeVisible();
+  expect(await screen.findByText(/Всего по фильтру: 2 ·/)).toBeVisible();
   resolveFirst(page);
-  await waitFor(() => expect(screen.queryByText(/Всего: 21 ·/)).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByText(/Всего по фильтру: 21 ·/)).not.toBeInTheDocument());
 });

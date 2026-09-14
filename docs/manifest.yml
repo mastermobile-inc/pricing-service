@@ -565,7 +565,7 @@ documents:
     source_of_truth: true
     related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, app/services/logistics_drivers.py, app/services/logistics_pending.py, tasks/sync_logistics_drivers_from_bitrix.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
     related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py, tests/test_logistics_drivers_pending.py, tests/test_logistics_driver_job.py]
-    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback, drivers, pending-documents, task-225]
+    keywords: [logistics, route-run, rtu, transit, reroute, transfer-sync, scanner, external-carrier, manual-review, web-fallback, drivers, pending-documents, task-225]
   - path: docs/specs/customer-return-carrier-control.md
     title: Customer Return Carrier Control
     doc_type: spec
@@ -965,8 +965,8 @@ documents:
     status: active
     owner: engineering
     source_of_truth: true
-    related_code: [app/services/logistics.py]
-    related_tests: [tests/]
+    related_code: [app/services/logistics.py, app/services/logistics_transfer_sync.py, tasks/sync_logistics_transfers_from_onec.py, infra/cron/logistics_transfer_sync.sh]
+    related_tests: [tests/test_logistics_transfer_sync.py, tests/test_logistics_transit.py]
     keywords: [logistics, 1c, contract]
   - path: docs/IntegrationContract.LogisticsSiteOrders1C.md
     title: Logistics Site Orders 1C Integration Contract

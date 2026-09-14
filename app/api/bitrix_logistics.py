@@ -58,17 +58,20 @@ from app.schemas.customer_returns import (
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
+    LogisticsDraftRouteRequest,
     LogisticsDriverChangeRequest,
     LogisticsExpectedDeliveryResponse,
     LogisticsHistoryEventResponse,
     LogisticsMonitorResponse,
     LogisticsPendingResponse,
+    LogisticsRerouteRequest,
+    LogisticsRerouteResponse,
 )
 from app.services import customer_return_deals as customer_return_deal_service
 from app.services import customer_return_service_requests as customer_return_request_service
 from app.services import customer_returns as customer_return_service
 from app.services import logistics as logistics_service
-from app.services import logistics_drivers, logistics_pending
+from app.services import logistics_drivers, logistics_pending, logistics_routing
 from app.services.bitrix_logistics_auth import (
     LogisticsBitrixSession,
     create_logistics_bitrix_session_token,
@@ -412,6 +415,11 @@ def bootstrap(
     settings = get_settings()
     if _customer_return_service_links_allowed(actor):
         capabilities = [*capabilities, "customer_return_service_links"]
+    if settings.logistics_transit_routing_enabled:
+        if actor.role in {"sender", "admin"}:
+            capabilities = [*capabilities, "transit_routing"]
+        if actor.role == "admin":
+            capabilities = [*capabilities, "reroute"]
     if settings.logistics_pending_documents_enabled and actor.role in {
         "sender",
         "receiver",
@@ -851,6 +859,37 @@ def scan_handoff_draft(
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
         dropoff_warehouse_id=None,
+        route_mode=payload.route_mode,
+    )
+
+
+@router.patch(
+    "/handoffs/draft/{draft_id}/items/{item_id}/route", response_model=LogisticsDraftResponse
+)
+def change_handoff_route(
+    draft_id: int,
+    item_id: int,
+    payload: LogisticsDraftRouteRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, {"sender", "admin"})
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_draft_in_pilot(db, draft_id)
+    return logistics_routing.change_draft_route(
+        db, draft_id=draft_id, item_id=item_id, actor_user_id=actor.id, mode=payload.mode
+    )
+
+
+@router.post("/transfers/{transfer_id}/reroute", response_model=LogisticsRerouteResponse)
+def reroute_transfer(
+    transfer_id: int,
+    payload: LogisticsRerouteRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    return logistics_routing.reroute(
+        db, transfer_id=transfer_id, actor_user_id=actor.id, source="bitrix", **payload.model_dump()
     )
 
 

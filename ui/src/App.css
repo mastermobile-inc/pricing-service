@@ -5391,6 +5391,40 @@
   object-fit: cover;
 }
 
+.logistics-route-fields,
+.logistics-route-fields label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.logistics-route-fields select,
+.logistics-route-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px;
+  border: 1px solid #cad5e2;
+  border-radius: 8px;
+  font: inherit;
+  background: #fff;
+  color: #152332;
+}
+
+.logistics-route-fields small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.logistics-items article:has(.logistics-route-fields) {
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
+.logistics-items article:has(.logistics-route-fields) > button {
+  grid-column: 2;
+  justify-self: end;
+}
+
 .logistics-camera__actions {
   position: sticky;
   bottom: -14px;

@@ -4,6 +4,9 @@ import { logisticsApi as api } from "../api/logistics";
 import type { BitrixLogisticsProfile } from "../api/bitrix";
 import { CustomerReturnsWorkspace } from "./CustomerReturnsWorkspace";
 import { LogisticsPendingPanel } from "./LogisticsPendingPanel";
+import { useLogisticsScanQueue } from "./useLogisticsScanQueue";
+import { DraftRouteControl, LogisticsRerouteDialog, type RoutedItem, type RerouteItem } from "./LogisticsRouteControls";
+import { startLogisticsCamera, type CameraCapabilities, type CameraSettings } from "./logisticsCamera";
 
 type Warehouse = {
   id: number;
@@ -26,7 +29,7 @@ type Draft = {
   warehouse_id: number;
   driver_id: number | null;
   item_count: number;
-  items: Array<{
+  items: Array<RoutedItem & {
     id: number;
     document_number: string;
     lookup_code?: string | null;
@@ -36,7 +39,7 @@ type Draft = {
   }>;
 };
 
-type MonitorItem = {
+type MonitorItem = RerouteItem & {
   transfer_id: number;
   document_number: string;
   site_order_number?: string | null;
@@ -104,15 +107,6 @@ type Bootstrap = {
 type Screen = "operation" | "expected" | "transit" | "history" | "errors" | "returns";
 type Operation = "handoff" | "receipt";
 
-type BarcodeDetectorResult = { rawValue?: string };
-type BarcodeDetectorInstance = {
-  detect(source: HTMLVideoElement): Promise<BarcodeDetectorResult[]>;
-};
-type BarcodeDetectorConstructor = new (options?: {
-  formats?: string[];
-}) => BarcodeDetectorInstance;
-type ScannerControls = { stop(): void };
-
 const STATUS_LABELS: Record<string, string> = {
   at_warehouse: "На складе",
   in_transit: "В пути",
@@ -124,6 +118,7 @@ const EVENT_LABELS: Record<string, string> = {
   created: "Создано перемещение",
   ready_at_warehouse: "Готово к передаче",
   handed_to_driver: "Передано водителю",
+  route_dropoff_changed: "Изменена точка сдачи рейса",
   pickup_moving_to_point: "В пути в магазин",
   arrived_at_point: "Прибыло в магазин",
   accepted_at_point: "Принято в магазине",
@@ -320,6 +315,13 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
   const closedRef = useRef(false);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
+  const [deviceId, setDeviceId] = useState("");
+  const [cameraAttempt, setCameraAttempt] = useState(0);
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [track, setTrack] = useState<MediaStreamTrack | null>(null);
+  const [caps, setCaps] = useState<CameraCapabilities>({});
+  const [zoom, setZoom] = useState(1);
+  const [focus, setFocus] = useState(0);
 
   const closeScanner = useCallback(() => {
     if (closedRef.current) return;
@@ -343,101 +345,28 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
   }, []);
 
   useEffect(() => {
-    let active = true;
-    let stream: MediaStream | null = null;
-    let intervalId: number | null = null;
-    let controls: ScannerControls | null = null;
     const video = videoRef.current;
     if (!video) return;
-
-    const stopCamera = () => {
-      active = false;
-      if (intervalId !== null) window.clearInterval(intervalId);
-      intervalId = null;
-      controls?.stop();
-      controls = null;
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
-      video.srcObject = null;
-    };
-    stopCameraRef.current = stopCamera;
-
-    const finish = (rawValue: string) => {
-      const normalized = rawValue.trim();
-      if (!active || !normalized) return;
-      onCodeRef.current(normalized);
-      closeScanner();
-    };
-
-    const start = async () => {
-      const Detector = (window as unknown as { BarcodeDetector?: BarcodeDetectorConstructor })
-        .BarcodeDetector;
-      try {
-        if (Detector && navigator.mediaDevices?.getUserMedia) {
-          const requestedStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: "environment" } },
-            audio: false,
-          });
-          if (!active) {
-            requestedStream.getTracks().forEach((track) => track.stop());
-            return;
-          }
-          stream = requestedStream;
-          video.srcObject = stream;
-          await video.play();
-          if (!active) {
-            stream.getTracks().forEach((track) => track.stop());
-            return;
-          }
-          const detector = new Detector({
-            formats: ["qr_code", "code_128", "code_39", "ean_13", "ean_8"],
-          });
-          intervalId = window.setInterval(async () => {
-            if (!active || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-            try {
-              const results = await detector.detect(video);
-              if (results[0]?.rawValue) finish(results[0].rawValue);
-            } catch {
-              // A single undecodable frame is normal.
-            }
-          }, 300);
-          setStarting(false);
-          return;
-        }
-
-        const { BrowserMultiFormatReader } = await import("@zxing/browser");
-        const reader = new BrowserMultiFormatReader();
-        const requestedControls = await reader.decodeFromConstraints(
-          {
-            video: { facingMode: { ideal: "environment" } },
-            audio: false,
-          },
-          video,
-          (result) => {
-            if (result?.getText()) finish(result.getText());
-          }
-        );
-        if (!active) {
-          requestedControls.stop();
-          return;
-        }
-        controls = requestedControls;
+    setStarting(true); setError(""); setCaps({}); setTrack(null);
+    const stopCamera = startLogisticsCamera(video, deviceId, {
+      code: code => { onCodeRef.current(code); closeScanner(); },
+      ready: (nextTrack, nextCameras) => {
+        setTrack(nextTrack); setCameras(nextCameras);
+        setCaps(nextTrack.getCapabilities?.() as CameraCapabilities || {});
+        const settings = nextTrack.getSettings?.() as CameraSettings | undefined;
+        setZoom(settings?.zoom || 1); setFocus(settings?.focusDistance || 0);
         setStarting(false);
-      } catch (cameraError) {
-        if (active) {
-          setStarting(false);
-          setError(cameraErrorMessage(cameraError));
-        }
-      }
-    };
-    void start();
+      },
+      error: cameraError => { setStarting(false); setError(cameraErrorMessage(cameraError)); },
+    });
+    stopCameraRef.current = stopCamera;
     return () => {
       stopCamera();
       if (stopCameraRef.current === stopCamera) {
         stopCameraRef.current = () => undefined;
       }
     };
-  }, [closeScanner]);
+  }, [closeScanner, deviceId, cameraAttempt]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -449,6 +378,8 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
 
   const decodeFile = async (file: File | undefined) => {
     if (!file) return;
+    stopCameraRef.current();
+    setTrack(null); setCaps({});
     const requestId = ++decodeRequestRef.current;
     const url = URL.createObjectURL(file);
     try {
@@ -477,8 +408,20 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
           </button>
         </div>
         <video ref={videoRef} className="logistics-camera__video" muted playsInline />
+        <p>Через упаковку: расправьте плёнку над кодом и слегка наклоните пакет от блика.</p>
+        {cameras.length > 1 && <label>Камера<select value={deviceId || track?.getSettings?.().deviceId || ""} onChange={e => setDeviceId(e.target.value)}>
+          {cameras.map((camera, i) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Камера ${i + 1}`}</option>)}
+        </select></label>}
+        {caps.zoom && <label>Увеличение<input type="range" min={caps.zoom.min} max={caps.zoom.max} step={caps.zoom.step || 0.1} value={zoom}
+          onChange={e => { const value = Number(e.target.value); setZoom(value); void track?.applyConstraints({ advanced: [{ zoom: value } as MediaTrackConstraintSet] }).catch(() => setError("Устройство не разрешило увеличить изображение")); }} /></label>}
+        {caps.focusMode?.includes("manual") && caps.focusDistance && <label>Фокус<input type="range" min={caps.focusDistance.min} max={caps.focusDistance.max} step={caps.focusDistance.step || 0.1} value={focus}
+          onChange={e => { const value = Number(e.target.value); setFocus(value); void track?.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: value } as MediaTrackConstraintSet] }).catch(() => setError("Устройство не разрешило изменить фокус")); }} /></label>}
+        {caps.focusMode?.includes("continuous") && <button type="button" className="btn btn--ghost" onClick={() => void track?.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => setError("Автофокус недоступен"))}>Автофокус</button>}
         {starting && <p className="logistics__message">Запускаем камеру…</p>}
         {error && <p className="logistics__message logistics__message--error">{error}</p>}
+        {!track && !starting && <button type="button" className="btn btn--ghost" onClick={() => {
+          decodeRequestRef.current += 1; setCameraAttempt(n => n + 1);
+        }}>Вернуться к камере</button>}
         <div className="logistics-camera__actions">
           <label className="btn btn--ghost logistics-camera__file">
             Распознать код с фото
@@ -520,8 +463,27 @@ export function LogisticsWorkspace() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState("");
+  const [rerouteItem, setRerouteItem] = useState<MonitorItem | null>(null);
   const reviewRequestId = useRef(0);
+  const listRequestIds = useRef({ expected: 0, transit: 0 });
   const operationInFlight = useRef(false);
+  const scanQueue = useLogisticsScanQueue<Draft>({
+    locked: operationInFlight,
+    process: async code => {
+      if (!draft) throw new Error("Откройте черновик перед сканированием");
+      const handoff = draft.draft_type === "handoff";
+      return (await api.post<Draft>(`/bitrix/logistics/${handoff ? "handoffs" : "receipts"}/draft/${draft.id}/scan`,
+        { lookup_code: code, ...(handoff && bootstrap?.capabilities.includes("transit_routing") ? { route_mode: "direct" } : {}) })).data;
+    },
+    success: data => {
+      setDraft(data); setMessageError(false);
+      setMessage(data.scan_result === "already_scanned" ? "Документ уже добавлен" : `Добавлено: ${data.item_count}`);
+    },
+    failure: (code, error) => {
+      setScanCode(current => current || code); setMessageError(true); setMessage(apiError(error));
+    },
+  });
+  const operationBusy = busy || scanQueue.count > 0;
   useEffect(() => {
     let stopped = false;
     const interval = window.setInterval(() => {
@@ -598,12 +560,16 @@ export function LogisticsWorkspace() {
     async (target: Screen) => {
       if (!bootstrap) return;
       if (target === "expected" && capabilities.has("expected")) {
+        const requestId = ++listRequestIds.current.expected;
         const params = listWarehouseId ? { warehouse_id: listWarehouseId } : undefined;
-        setExpected((await api.get<ExpectedItem[]>("/bitrix/logistics/expected-deliveries", { params })).data);
+        const { data } = await api.get<ExpectedItem[]>("/bitrix/logistics/expected-deliveries", { params });
+        if (requestId === listRequestIds.current.expected) setExpected(data);
       }
       if (target === "transit") {
+        const requestId = ++listRequestIds.current.transit;
         const params = { status: "in_transit", ...(listWarehouseId ? { warehouse_id: listWarehouseId } : {}) };
-        setTransit((await api.get<MonitorItem[]>("/bitrix/logistics/monitor", { params })).data);
+        const { data } = await api.get<MonitorItem[]>("/bitrix/logistics/monitor", { params });
+        if (requestId === listRequestIds.current.transit) setTransit(data);
       }
       if (target === "errors" && capabilities.has("errors")) {
         await loadReviews();
@@ -660,7 +626,7 @@ export function LogisticsWorkspace() {
   }, [loadLists, screen]);
 
   const run = async (action: () => Promise<void>) => {
-    if (operationInFlight.current) return;
+    if (operationInFlight.current || scanQueue.count > 0) return;
     operationInFlight.current = true;
     setBusy(true);
     setMessageError(false);
@@ -702,20 +668,17 @@ export function LogisticsWorkspace() {
       setMessage(`Черновик №${data.id} открыт`);
     });
 
-  const scan = (overrideCode?: string) =>
-    run(async () => {
-      const code = (overrideCode || scanCode).trim();
-      if (!draft || !code) return;
-      const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
-      const { data } = await api.post<Draft>(
-        `/bitrix/logistics/${base}/draft/${draft.id}/scan`,
-        { lookup_code: code }
-      );
-      setDraft(data);
-      setScanCode("");
-      setMessage(data.scan_result === "already_scanned"
-        ? "Документ уже добавлен" : `Добавлено: ${data.item_count}`);
-    });
+  const scan = (overrideCode?: string) => {
+    if (!draft) return;
+    scanQueue.enqueue(overrideCode || scanCode);
+    setScanCode("");
+  };
+
+  const changeRoute = (itemId: number, mode: string) => void run(async () => {
+    if (!draft) return;
+    const { data } = await api.patch<Draft>(`/bitrix/logistics/handoffs/draft/${draft.id}/items/${itemId}/route`, { mode });
+    setDraft(data); setMessage("Точка сдачи изменена. Документы сохранены");
+  });
 
   const confirm = () =>
     run(async () => {
@@ -992,13 +955,14 @@ export function LogisticsWorkspace() {
                 <div className="logistics-scan-row">
                   <input
                     autoFocus
+                    ref={scanQueue.inputRef}
                     inputMode="text"
                     autoComplete="off"
                     maxLength={255}
                     value={scanCode}
                     onChange={(event) => setScanCode(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") void scan();
+                      if (event.key === "Enter") { event.preventDefault(); scan(event.currentTarget.value); }
                     }}
                     placeholder="QR, штрихкод или номер"
                   />
@@ -1010,6 +974,9 @@ export function LogisticsWorkspace() {
                   Добавить код
                 </button>
                 <div className="logistics-items">
+                  <p>Внешний 2D-сканер: подключите как клавиатуру, окончание ввода — Enter.</p>
+                  {scanQueue.count > 0 && <p role="status">В очереди сканирования: {scanQueue.count}</p>}
+                  {scanQueue.failed.length > 0 && <p role="alert">Не добавлены: {scanQueue.failed.join(", ")}. Проверьте сообщения и повторите эти сканы.</p>}
                   {message && <p className={`logistics__message${messageError ? " logistics__message--error" : ""}`} role={messageError ? "alert" : "status"}>{message}</p>}
                   {Object.entries(groupedDraft).map(([destination, items]) => <section key={destination}>
                     <h3>{destination}</h3>
@@ -1024,6 +991,7 @@ export function LogisticsWorkspace() {
                             ? `Куда: ${item.dropoff_warehouse_name}`
                             : "Направление требует проверки"}
                         </small>
+                        {draft.draft_type === "handoff" && <DraftRouteControl item={item} disabled={operationBusy} onChange={mode => changeRoute(item.id, mode)} />}
                       </div>
                       <button
                         className="btn btn--ghost"
@@ -1040,12 +1008,12 @@ export function LogisticsWorkspace() {
                 {!draft.item_count && <p>Добавьте хотя бы один документ для подтверждения</p>}
                 {capabilities.has("pending_documents") && warehouseId && <LogisticsPendingPanel
                   key={`${operation}:${warehouseId}:${draft.id}`} operation={operation}
-                  warehouseId={warehouseId} draftId={draft.id} revision={draft}
+                  warehouseId={warehouseId} draftId={draft.id} revision={draft} updating={operationBusy}
                 />}
-                <button className="btn logistics-primary" type="button" disabled={!draft.item_count || busy} onClick={confirm}>
+                <button className="btn logistics-primary" type="button" disabled={!draft.item_count || operationBusy} onClick={confirm}>
                   Подтвердить {draft.item_count ? `(${draft.item_count})` : ""}
                 </button>
-                <button className="btn btn--ghost" type="button" disabled={busy} onClick={cancelDraft}>
+                <button className="btn btn--ghost" type="button" disabled={operationBusy} onClick={cancelDraft}>
                   Отменить черновик
                 </button>
               </div>
@@ -1081,8 +1049,10 @@ export function LogisticsWorkspace() {
               subtitle: item.dropoff_warehouse_name || item.current_warehouse_name || "Точка не указана",
               meta: `${item.driver_name || STATUS_LABELS[item.status] || item.status} · ${formatDate(item.last_event_at)}`,
               warning: item.manual_review_count ? `Ошибок: ${item.manual_review_count}` : undefined,
+              canReroute: capabilities.has("reroute") && !!item.route_options?.length && !!item.version,
             }))}
             onHistory={(id, title) => void openHistory(id, title)}
+            onReroute={id => setRerouteItem(transit.find(item => item.transfer_id === id) || null)}
           />
         )}
 
@@ -1208,6 +1178,13 @@ export function LogisticsWorkspace() {
           </button>
         )}
       </main>
+      {rerouteItem && <LogisticsRerouteDialog item={rerouteItem}
+        submit={async payload => {
+          try { await api.post(`/bitrix/logistics/transfers/${rerouteItem.transfer_id}/reroute`, payload); }
+          catch (error) { throw new Error(apiError(error)); }
+        }}
+        onDone={() => { setRerouteItem(null); void loadLists("transit"); setMessage("Точка сдачи изменена; приёмку выполняет сотрудник нового склада"); }}
+        onClose={() => { setRerouteItem(null); void loadLists("transit"); }} />}
       {cameraOpen && (
         <CameraScanner
           onCode={(code) => {
@@ -1226,11 +1203,13 @@ function LogisticsList({
   empty,
   items,
   onHistory,
+  onReroute,
 }: {
   title: string;
   empty: string;
-  items: Array<{ id: number; title: string; subtitle: string; meta: string; warning?: string }>;
+  items: Array<{ id: number; title: string; subtitle: string; meta: string; warning?: string; canReroute?: boolean }>;
   onHistory: (id: number, title: string) => void;
+  onReroute?: (id: number) => void;
 }) {
   return (
     <section className="logistics-card">
@@ -1244,6 +1223,7 @@ function LogisticsList({
               <span>{item.subtitle}</span>
               <small>{item.meta}</small>
               {item.warning && <em>{item.warning}</em>}
+              {item.canReroute && <button type="button" className="btn btn--ghost" onClick={() => onReroute?.(item.id)}>Изменить точку сдачи</button>}
             </div>
             <button className="btn btn--ghost" type="button" onClick={() => onHistory(item.id, item.title)}>
               История

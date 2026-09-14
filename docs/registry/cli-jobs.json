@@ -44,6 +44,16 @@
     }
   ],
   "commands": {
+    "sync_logistics_transfers_from_onec.py": {
+      "owner": "logistics",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "upsert_by_source_document_type_external_id",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/logistics-control-contour.md",
+      "remove_after": null
+    },
     "sync_logistics_drivers_from_bitrix.py": {
       "owner": "logistics",
       "kind": "permanent_cli",
