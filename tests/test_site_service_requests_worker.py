@@ -39,7 +39,9 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
     _apply_stage_after_customer_reply,
+    _confirm_site_service_request_command_readback,
     _handle_awaiting_reply_started,
+    _is_substantive_support_reply,
     apply_site_service_request_worker_plans,
     auto_close_silent_site_service_requests,
     build_site_service_request_worker_plans,
@@ -5862,12 +5864,19 @@ def _payload_with_history(history: list[dict]) -> SiteServiceRequestEventPayload
     return SiteServiceRequestEventPayload.model_validate(payload)
 
 
-def _message(message_id: int, kind: str, at: str, *, visible: bool = True) -> dict:
+def _message(
+    message_id: int,
+    kind: str,
+    at: str,
+    *,
+    visible: bool = True,
+    text: str = "Проверили заказ, отвечаем по существу",
+) -> dict:
     return {
         "messageId": message_id,
         "authorKind": kind,
         "createdAt": at,
-        "text": "текст",
+        "text": text,
         "files": [],
         "isVisibleToCustomer": visible,
     }
@@ -6397,3 +6406,140 @@ def test_close_gate_does_not_revert_an_auto_close(db_session) -> None:
     db_session.refresh(case)
     assert case.auto_closed_at is not None
     assert not any("site-service-close-gate" in row["COMMENT"] for row in api.timeline_comments)
+
+
+@pytest.mark.parametrize(
+    ("text", "substantive"),
+    [
+        ("Здравствуйте!", False),
+        ("здравствуйте", False),
+        ("Добрый день, Иван!", False),
+        ("Приветствую!", False),
+        ("саламчик", False),
+        ("test", False),
+        ("", False),
+        (None, False),
+        ("Да, вернём деньги", True),
+        ("Здравствуйте! Заказ уже в пути", True),
+        ("Доброе утро, отправили замену сегодня", True),
+    ],
+)
+def test_greeting_detection(text, substantive) -> None:
+    """Одно приветствие — не ответ; приветствие с продолжением — ответ."""
+
+    assert _is_substantive_support_reply(text) is substantive
+
+
+def _applied_reply_command(
+    db_session,
+    case,
+    *,
+    source_message_id: int,
+    created_at: datetime,
+) -> None:
+    """Ответ, который уже подтверждён сайтом и привязан к сообщению истории."""
+
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    command_key = f"site-service-reply:{case.id}:{source_message_id}"
+    db_session.add(
+        SiteServiceRequestCommand(
+            case_id=case.id,
+            command_key=command_key,
+            reply_encrypted=cipher.encrypt(b"reply", event_id=command_key),
+            reply_sha256="0" * 64,
+            status="applied",
+            source_message_id=source_message_id,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+    db_session.commit()
+
+
+def _greeting_readback(db_session, *, text: str):
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-08-22T09:00:00+03:00"),
+            _message(2, "support-team", "2026-08-22T10:00:00+03:00", text=text),
+        ]
+    )
+    case = _case()
+    db_session.add(case)
+    db_session.commit()
+    _applied_reply_command(
+        db_session,
+        case,
+        source_message_id=2,
+        created_at=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    readback = _confirm_site_service_request_command_readback(
+        db_session, case=case, payload=payload
+    )
+    return case, readback
+
+
+def test_greeting_only_reply_does_not_close_the_first_response_sla(db_session) -> None:
+    """«Здравствуйте!» клиенту ничего не ответило — срок первого ответа идёт дальше."""
+
+    case, readback = _greeting_readback(db_session, text="Здравствуйте!")
+
+    assert readback.substantive is False
+    assert case.first_response_at is None
+
+
+def test_greeting_only_reply_is_still_delivered_to_the_customer(db_session) -> None:
+    """Сообщение ушло клиенту: карточка получает «Отправлено», ответ не уедет второй раз."""
+
+    case, readback = _greeting_readback(db_session, text="Здравствуйте!")
+
+    assert readback.delivered is True
+    assert case.latest_outbound_message_id == 2
+
+
+def test_short_but_meaningful_reply_counts(db_session) -> None:
+    """Короткий, но осмысленный ответ срок первого ответа закрывает."""
+
+    case, readback = _greeting_readback(db_session, text="Да, вернём деньги")
+
+    assert readback.delivered is True
+    assert readback.substantive is True
+    assert case.first_response_at == datetime(2026, 8, 22, 7, 0, tzinfo=UTC)
+
+
+def test_reply_without_a_confirmed_command_is_not_delivered(db_session) -> None:
+    """Без подтверждения с сайта ответ не считается доставленным — как и раньше."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-08-22T09:00:00+03:00"),
+            _message(2, "support-team", "2026-08-22T10:00:00+03:00"),
+        ]
+    )
+    case = _case()
+    db_session.add(case)
+    db_session.commit()
+
+    readback = _confirm_site_service_request_command_readback(
+        db_session, case=case, payload=payload
+    )
+
+    assert readback.delivered is False
+    assert readback.substantive is False
+
+
+def test_greeting_only_reply_keeps_the_customer_waiting() -> None:
+    """После «Здравствуйте!» клиент по-прежнему ждёт ответа, а не наоборот."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "support-team", "2026-09-11T18:45:00+03:00"),
+            _message(3, "customer", "2026-09-11T23:36:00+03:00"),
+            _message(4, "support-team", "2026-09-12T08:00:00+03:00", text="Здравствуйте!"),
+        ]
+    )
+    case = _case(first_response_at=datetime(2026, 9, 11, 15, 45, tzinfo=UTC))
+
+    assert compute_awaiting_reply_since(payload, case=case) == datetime(
+        2026, 9, 11, 20, 36, tzinfo=UTC
+    )

@@ -4066,11 +4066,12 @@ def _apply_site_service_request_worker_plan(
     )
     if case is None:
         raise SiteServiceRequestPermanentError("case_not_found")
-    confirmed_outbound_reply = _confirm_site_service_request_command_readback(
+    reply_readback = _confirm_site_service_request_command_readback(
         session,
         case=case,
         payload=payload,
     )
+    confirmed_outbound_reply = reply_readback.delivered
     awaiting_started = _apply_awaiting_reply_state(
         case,
         awaiting_since=compute_awaiting_reply_since(payload, case=case),
@@ -4256,7 +4257,7 @@ def _apply_site_service_request_worker_plan(
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
 
-    if confirmed_outbound_reply and not awaiting_started:
+    if reply_readback.substantive and not awaiting_started:
         _apply_stage_after_customer_reply(
             settings=settings,
             writer=writer,
@@ -4401,6 +4402,38 @@ def _handle_awaiting_reply_started(
     case.awaiting_reply_notified_at = now
 
 
+# Приветствия, которые сами по себе ответом клиенту не являются. Список короткий
+# и намеренно живёт в коде, а не в .env: порог напрямую двигает срок первого
+# ответа, поэтому его правка должна проходить ревью и тесты.
+SITE_SERVICE_GREETING_PREFIXES = (
+    "здравствуйте",
+    "добрый день",
+    "доброе утро",
+    "добрый вечер",
+    "доброй ночи",
+    "приветствую",
+    "привет",
+    "hello",
+    "hi",
+)
+# Символов после снятия приветствия и имени. Порог низкий сознательно: задача —
+# отсечь сообщение, которое состоит только из приветствия, а не требовать
+# развёрнутого ответа. «Да, вернём деньги» проходит, «Добрый день, Иван!» — нет.
+SITE_SERVICE_MIN_REPLY_CHARS = 10
+
+
+def _is_substantive_support_reply(text: str | None) -> bool:
+    """Есть ли в ответе поддержки что-то, кроме приветствия."""
+
+    normalized = " ".join((text or "").split())
+    stripped = normalized.casefold().replace("ё", "е")
+    for prefix in SITE_SERVICE_GREETING_PREFIXES:
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix) :].lstrip(" ,.!?-—:")
+            break
+    return len(stripped) >= SITE_SERVICE_MIN_REPLY_CHARS
+
+
 def compute_awaiting_reply_since(
     payload: SiteServiceRequestEventPayload,
     *,
@@ -4419,6 +4452,9 @@ def compute_awaiting_reply_since(
         if (
             message.author_kind in {"support", "support-team", "support_team"}
             and message.is_visible_to_customer
+            # «Здравствуйте!» без продолжения клиенту ничего не отвечает, поэтому
+            # ожидание с него не снимается и срок ответа продолжает идти.
+            and _is_substantive_support_reply(message.text)
         ):
             created = _as_utc(message.created_at)
             if support_last is None or created > support_last:
@@ -4464,12 +4500,30 @@ def _apply_awaiting_reply_state(
     return True
 
 
+@dataclass(frozen=True)
+class SiteServiceRequestReplyReadback:
+    """Что подтвердила история переписки по исходящему ответу.
+
+    Два разных факта, которые раньше отвечали одним `True` и поэтому слипались:
+
+    * ``delivered`` — сообщение ушло клиенту. От него зависит статус «Отправлено»
+      и очистка поля «Отправить клиенту»; сюда идёт **любое** видимое сообщение,
+      иначе ответ завис бы в очереди и ушёл клиенту второй раз;
+    * ``substantive`` — в сообщении есть ответ по существу. От него зависят срок
+      первого ответа и перевод карточки в «Ожидаем клиента»: за «Здравствуйте!»
+      клиенту ждать нечего.
+    """
+
+    delivered: bool
+    substantive: bool
+
+
 def _confirm_site_service_request_command_readback(
     session: Session,
     *,
     case: SiteServiceRequestCase,
     payload: SiteServiceRequestEventPayload,
-) -> bool:
+) -> SiteServiceRequestReplyReadback:
     support_messages = {
         message.message_id: _as_utc(message.created_at)
         for message in payload.history
@@ -4478,16 +4532,24 @@ def _confirm_site_service_request_command_readback(
         and _as_utc(message.created_at) >= _as_utc(case.first_seen_at)
     }
     if not support_messages:
-        return False
-    first_support_response_at = min(support_messages.values())
-    if case.first_response_at is None or first_support_response_at < _as_utc(
-        case.first_response_at
-    ):
-        case.first_response_at = first_support_response_at
+        return SiteServiceRequestReplyReadback(delivered=False, substantive=False)
+    substantive_messages = {
+        message.message_id: _as_utc(message.created_at)
+        for message in payload.history
+        if message.message_id in support_messages and _is_substantive_support_reply(message.text)
+    }
+    if substantive_messages:
+        first_support_response_at = min(substantive_messages.values())
+        if case.first_response_at is None or first_support_response_at < _as_utc(
+            case.first_response_at
+        ):
+            case.first_response_at = first_support_response_at
     case.latest_outbound_message_id = max(
         case.latest_outbound_message_id or 0,
         max(support_messages),
     )
+    # Доставку ищем по всем видимым сообщениям: фильтр приветствий не должен
+    # оставить карточку без статуса «Отправлено» и отправить ответ повторно.
     commands = session.scalars(
         select(SiteServiceRequestCommand).where(
             SiteServiceRequestCommand.case_id == case.id,
@@ -4495,17 +4557,18 @@ def _confirm_site_service_request_command_readback(
             SiteServiceRequestCommand.source_message_id.in_(support_messages),
         )
     ).all()
+    if not commands:
+        return SiteServiceRequestReplyReadback(delivered=False, substantive=False)
     confirmed_at = [
-        support_messages[command.source_message_id]
+        substantive_messages[command.source_message_id]
         for command in commands
-        if command.source_message_id in support_messages
+        if command.source_message_id in substantive_messages
     ]
-    if not confirmed_at:
-        return False
-    first_response_at = min(confirmed_at)
-    if case.first_response_at is None or first_response_at < _as_utc(case.first_response_at):
-        case.first_response_at = first_response_at
-    return True
+    if confirmed_at:
+        first_response_at = min(confirmed_at)
+        if case.first_response_at is None or first_response_at < _as_utc(case.first_response_at):
+            case.first_response_at = first_response_at
+    return SiteServiceRequestReplyReadback(delivered=True, substantive=bool(confirmed_at))
 
 
 def _record_site_service_request_failure(
