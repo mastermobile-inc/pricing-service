@@ -232,6 +232,9 @@ class Settings(BaseSettings):
     # 0 = автозакрытие выключено. Включается отдельным шагом после релиза,
     # чтобы накопившиеся молчаливые карточки не закрылись одним тиком.
     site_service_requests_auto_close_silence_days: int = Field(default=0, ge=0, le=30)
+    # 0 = отлов дублей выключен. Окно в минутах между двумя карточками одного
+    # клиента по одному заказу; в бою 5 — двойная отправка укладывается в секунды.
+    site_service_requests_duplicate_window_minutes: int = Field(default=0, ge=0, le=180)
     site_service_requests_timestamp_tolerance_seconds: int = Field(
         default=300,
         ge=1,

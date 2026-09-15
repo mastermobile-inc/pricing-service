@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.models.customer_return import CustomerReturnShipment
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
@@ -4257,23 +4258,37 @@ def _apply_site_service_request_worker_plan(
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
 
-    if reply_readback.substantive and not awaiting_started:
-        _apply_stage_after_customer_reply(
-            settings=settings,
-            writer=writer,
-            item_id=item_id,
-            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
-        )
-
-    if awaiting_started:
-        _handle_awaiting_reply_started(
+    # Дубль ищем после сборки карточки: человеку полезно видеть её заполненной,
+    # с текстом обращения и ссылкой на основную.
+    duplicate_of = _detect_site_service_request_duplicate(session, case=case, settings=settings)
+    if duplicate_of is not None:
+        _close_site_service_request_as_duplicate(
             case=case,
+            primary=duplicate_of,
             settings=settings,
             writer=writer,
+            field_map=field_map,
             item_id=item_id,
-            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
             now=now,
         )
+    else:
+        if reply_readback.substantive and not awaiting_started:
+            _apply_stage_after_customer_reply(
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+            )
+
+        if awaiting_started:
+            _handle_awaiting_reply_started(
+                case=case,
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+                now=now,
+            )
 
     case.bitrix_item_id = item_id
     case.base_sync_status = base_sync_status
@@ -4297,6 +4312,207 @@ def _apply_site_service_request_worker_plan(
         bitrix_item_id=item_id,
         error_code=error_code,
     )
+
+
+# Возврат в этих состояниях уже завершён и работу по обращению не держит.
+_SITE_SERVICE_CLOSED_RETURN_STATUSES = ("picked_up", "onec_return_confirmed", "cancelled")
+
+
+def _site_service_request_has_open_return(
+    session: Session,
+    *,
+    case: SiteServiceRequestCase,
+) -> bool:
+    if case.bitrix_item_id is None:
+        return False
+    item_id = int(case.bitrix_item_id)
+    return (
+        session.scalar(
+            select(CustomerReturnShipment.id)
+            .where(
+                or_(
+                    CustomerReturnShipment.service_request_item_id == item_id,
+                    CustomerReturnShipment.bitrix_case_id == str(item_id),
+                ),
+                CustomerReturnShipment.status.not_in(_SITE_SERVICE_CLOSED_RETURN_STATUSES),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _detect_site_service_request_duplicate(
+    session: Session,
+    *,
+    case: SiteServiceRequestCase,
+    settings: Settings,
+) -> SiteServiceRequestCase | None:
+    """Более раннее обращение того же клиента по тому же заказу, либо ``None``.
+
+    Клиент нажимает «отправить», не дожидается подтверждения, обновляет страницу и
+    отправляет снова — в очереди появляются две одинаковые карточки. Дальше их
+    разбирают два разных человека, каждый не зная про второго.
+
+    Помечаем дублем только бесспорный случай, и каждое условие ниже — отдельная
+    страховка от ложного срабатывания:
+
+    * узкое окно по времени создания;
+    * по новой карточке ещё не отвечали и её не закрывали;
+    * по ней не заводили исходящих ответов и возвратов — значит с ней не работали;
+    * у обеих карточек **заполнен** один и тот же заказ: `NULL` не равен `NULL`;
+    * совпадает источник: письмо и тикет сайта по одному заказу — нормальная
+      ситуация, там нужен человек;
+    * основная карточка открыта, иначе клиента отправили бы в тупик.
+
+    Ошибка обратима: клиент, написавший в закрытый дубль, откроет его сам.
+    """
+
+    window = settings.site_service_requests_duplicate_window_minutes
+    if window <= 0:
+        return None
+    if case.crm_contact_id is None or case.crm_deal_id is None:
+        return None
+    if (
+        case.first_response_at is not None
+        or case.closed_without_response_at is not None
+        or case.auto_closed_at is not None
+    ):
+        return None
+    worked_on = session.scalar(
+        select(SiteServiceRequestCommand.id)
+        .where(
+            SiteServiceRequestCommand.case_id == case.id,
+            SiteServiceRequestCommand.status.in_(("pending", "leased", "applied")),
+        )
+        .limit(1)
+    )
+    if worked_on is not None:
+        return None
+    if _site_service_request_has_open_return(session, case=case):
+        return None
+    first_seen = _as_utc(case.first_seen_at)
+    return session.scalar(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.id != case.id,
+            SiteServiceRequestCase.crm_contact_id == case.crm_contact_id,
+            SiteServiceRequestCase.crm_deal_id == case.crm_deal_id,
+            SiteServiceRequestCase.source_kind == case.source_kind,
+            SiteServiceRequestCase.bitrix_item_id.is_not(None),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+            SiteServiceRequestCase.first_seen_at >= first_seen - timedelta(minutes=window),
+            # Две карточки могут создаться в одну секунду, поэтому ничью разрывает
+            # id: дублем всегда помечается более новая.
+            or_(
+                SiteServiceRequestCase.first_seen_at < first_seen,
+                and_(
+                    SiteServiceRequestCase.first_seen_at == first_seen,
+                    SiteServiceRequestCase.id < case.id,
+                ),
+            ),
+        )
+        .order_by(
+            SiteServiceRequestCase.first_seen_at.asc(),
+            SiteServiceRequestCase.id.asc(),
+        )
+        .limit(1)
+    )
+
+
+def _close_site_service_request_as_duplicate(
+    *,
+    case: SiteServiceRequestCase,
+    primary: SiteServiceRequestCase,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    field_map: dict[str, str],
+    item_id: int,
+    now: datetime,
+) -> bool:
+    """Закрывает дубль с причиной и связывает обе карточки ссылками.
+
+    Причина закрытия — та же, что у административного закрытия: SLA первого
+    ответа по дублю перестаёт тикать, карточка выпадает из ленты назначений и
+    руководителя по ней не дёргают.
+    """
+
+    failure_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("failure") or "")
+    reason_field = str(field_map.get("close_without_response_reason") or "").strip()
+    if not failure_stage_id or not reason_field:
+        return False
+    reason_value = _site_service_request_enum_value(
+        settings, "close_without_response_reason_duplicate"
+    )
+    readback = writer.update_item_fields(
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        item_id=item_id,
+        fields={"stageId": failure_stage_id, reason_field: reason_value},
+    )
+    if (
+        str(_item_field_value(readback, "stageId") or "") != failure_stage_id
+        or str(_item_field_value(readback, reason_field) or "") != reason_value
+    ):
+        raise RuntimeError("bitrix_duplicate_close_readback_failed")
+    case.closed_without_response_at = _as_utc(now)
+    case.close_without_response_reason = "duplicate"
+
+    # Пояснения — подсказка человеку, а не состояние контура: недоступный timeline
+    # не должен откатывать уже подтверждённое закрытие и гонять событие по кругу.
+    primary_item_id = int(primary.bitrix_item_id)
+    try:
+        primary_reference = site_service_request_item_url(settings, primary_item_id)
+    except SiteServiceRequestConfigurationError:
+        # Без настроенного портала ссылку не собрать, но номер обращения человеку
+        # уже достаточно, чтобы найти основную карточку.
+        primary_reference = f"#{primary.source_ticket_id}"
+    _add_site_service_request_comment_once(
+        settings=settings,
+        writer=writer,
+        item_id=item_id,
+        marker=f"[site-service-duplicate:{case.id}]",
+        comment=(
+            f"Дубль обращения {primary_reference} — "
+            "работа ведётся в основной карточке. "
+            f"[site-service-duplicate:{case.id}]"
+        ),
+    )
+    _add_site_service_request_comment_once(
+        settings=settings,
+        writer=writer,
+        item_id=primary_item_id,
+        marker=f"[site-service-duplicate-of:{case.id}]",
+        comment=(
+            f"К этому обращению пришёл дубль #{case.source_ticket_id}, он закрыт. "
+            f"[site-service-duplicate-of:{case.id}]"
+        ),
+    )
+    return True
+
+
+def _add_site_service_request_comment_once(
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    item_id: int,
+    marker: str,
+    comment: str,
+) -> None:
+    try:
+        if writer.timeline_comment_exists(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            marker=marker,
+        ):
+            return
+        writer.add_timeline_comment(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            comment=comment,
+        )
+    except RuntimeError:
+        return
 
 
 def _apply_stage_after_customer_reply(

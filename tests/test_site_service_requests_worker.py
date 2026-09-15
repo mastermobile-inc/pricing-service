@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.models.customer_return import CustomerReturnShipment
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
@@ -39,7 +40,9 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
     _apply_stage_after_customer_reply,
+    _close_site_service_request_as_duplicate,
     _confirm_site_service_request_command_readback,
+    _detect_site_service_request_duplicate,
     _handle_awaiting_reply_started,
     _is_substantive_support_reply,
     apply_site_service_request_worker_plans,
@@ -6543,3 +6546,244 @@ def test_greeting_only_reply_keeps_the_customer_waiting() -> None:
     assert compute_awaiting_reply_since(payload, case=case) == datetime(
         2026, 9, 11, 20, 36, tzinfo=UTC
     )
+
+
+def _duplicate_settings(**overrides) -> Settings:
+    """Настройки с включённым отловом дублей и причиной закрытия «дубль»."""
+
+    base = _stage_settings()
+    field_map = dict(base.site_service_requests_bitrix_field_map)
+    field_map["close_without_response_reason"] = "UF_CLOSE_REASON"
+    enum_map = dict(base.site_service_requests_bitrix_enum_map)
+    enum_map["close_without_response_reason_duplicate"] = "530"
+    values = {
+        "site_service_requests_duplicate_window_minutes": 5,
+        "site_service_requests_bitrix_webhook_url": "https://portal.example/rest/1/token/",
+        "site_service_requests_bitrix_field_map": field_map,
+        "site_service_requests_bitrix_enum_map": enum_map,
+    }
+    values.update(overrides)
+    return _stage_settings(**values)
+
+
+def _twin_cases(
+    db_session,
+    *,
+    gap: timedelta,
+    newer_deal_id: int = 33485,
+    newer_kind: str = "site_ticket",
+    **newer_overrides,
+):
+    """Две карточки одного клиента: первая, затем вторая через `gap`."""
+
+    first_seen = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)
+    older = _case(
+        source_ticket_id=759,
+        bitrix_item_id=759,
+        first_seen_at=first_seen,
+        crm_contact_id=501,
+        crm_deal_id=33485,
+    )
+    newer = _case(
+        source_ticket_id=760,
+        bitrix_item_id=760,
+        first_seen_at=first_seen + gap,
+        crm_contact_id=501,
+        crm_deal_id=newer_deal_id,
+        source_kind=newer_kind,
+        **newer_overrides,
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+    return older, newer
+
+
+def test_second_ticket_within_the_window_is_closed_as_a_duplicate(db_session) -> None:
+    """Клиент нажал «отправить» дважды — вторая карточка помечается дублем."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    api = FakeBitrixApi()
+    api.items[760] = {"id": "760", "stageId": "DT1134_55:NEW"}
+    api.items[759] = {"id": "759", "stageId": "DT1134_55:NEW"}
+
+    primary = _detect_site_service_request_duplicate(db_session, case=newer, settings=settings)
+    assert primary is not None
+    assert primary.id == older.id
+
+    _close_site_service_request_as_duplicate(
+        case=newer,
+        primary=primary,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        field_map=settings.site_service_requests_bitrix_field_map,
+        item_id=760,
+        now=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+    )
+
+    assert api.items[760]["stageId"] == "DT1134_55:FAIL"
+    # Битрикс принимает UF_-поля в camelCase, поэтому в карточке ключ такой.
+    assert api.items[760]["ufCloseReason"] == "530"
+    assert newer.close_without_response_reason == "duplicate"
+    assert newer.closed_without_response_at is not None
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert any("site-service-duplicate:" in text for text in comments)
+    assert any("site-service-duplicate-of:" in text for text in comments)
+
+
+def test_duplicate_detection_keeps_the_older_card_open(db_session) -> None:
+    """Дублем помечается более новая карточка, старшая остаётся рабочей."""
+
+    settings = _duplicate_settings()
+    older, _newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+
+    assert _detect_site_service_request_duplicate(db_session, case=older, settings=settings) is None
+
+
+def test_second_question_after_the_window_is_not_a_duplicate(db_session) -> None:
+    """Через девять минут клиент задаёт второй вопрос — это не двойной клик."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(minutes=9, seconds=20))
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_ticket_with_an_answer_is_never_marked_as_a_duplicate(db_session) -> None:
+    """По карточке уже ответили — закрывать её дублем поздно."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(
+        db_session,
+        gap=timedelta(seconds=10),
+        first_response_at=datetime(2026, 9, 16, 9, 30, tzinfo=UTC),
+    )
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_the_same_deal(db_session) -> None:
+    """Разные заказы — разные обращения, даже от одного клиента подряд."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10), newer_deal_id=37033)
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_a_known_deal(db_session) -> None:
+    """Заказ не определён — доказательства «это про одно и то же» нет."""
+
+    settings = _duplicate_settings()
+    first_seen = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)
+    older = _case(
+        source_ticket_id=759,
+        bitrix_item_id=759,
+        first_seen_at=first_seen,
+        crm_contact_id=501,
+        crm_deal_id=None,
+    )
+    newer = _case(
+        source_ticket_id=760,
+        bitrix_item_id=760,
+        first_seen_at=first_seen + timedelta(seconds=10),
+        crm_contact_id=501,
+        crm_deal_id=None,
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_the_same_source(db_session) -> None:
+    """Письмо и тикет сайта по одному заказу — нормальная пара, нужен человек."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10), newer_kind="bitrix_mail")
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_card_already_worked_on(db_session) -> None:
+    """По карточке уже готовили ответ — с ней работали, закрывать нельзя."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    _add_reply_command(
+        db_session,
+        newer,
+        status="pending",
+        created_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+    )
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_card_with_an_open_return(db_session) -> None:
+    """По карточке заведён возврат — это уже работа, а не случайный повтор."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    db_session.add(
+        CustomerReturnShipment(
+            carrier="cdek",
+            tracking_number="CDEK-760",
+            status="in_transit",
+            status_changed_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+            source="service_request_card",
+            service_request_item_id=760,
+            updated_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_closed_primary(db_session) -> None:
+    """Основная карточка закрыта — отправлять клиента туда значит завести в тупик."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    older.closed_without_response_at = datetime(2026, 9, 16, 9, 0, 5, tzinfo=UTC)
+    older.close_without_response_reason = "spam"
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_window_zero_disables_detection(db_session) -> None:
+    """По умолчанию отлов выключен и ничего не помечает."""
+
+    settings = _duplicate_settings(site_service_requests_duplicate_window_minutes=0)
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_close_is_not_repeated_on_the_second_tick(db_session) -> None:
+    """Повторная обработка не задваивает комментарии и не ищет дубль заново."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    api = FakeBitrixApi()
+    api.items[760] = {"id": "760", "stageId": "DT1134_55:NEW"}
+    api.items[759] = {"id": "759", "stageId": "DT1134_55:NEW"}
+    writer = SiteServiceRequestBitrixWriter(api)
+    for _ in range(2):
+        _close_site_service_request_as_duplicate(
+            case=newer,
+            primary=older,
+            settings=settings,
+            writer=writer,
+            field_map=settings.site_service_requests_bitrix_field_map,
+            item_id=760,
+            now=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+        )
+
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-duplicate:" in text for text in comments) == 1
+    assert sum("site-service-duplicate-of:" in text for text in comments) == 1
+    db_session.commit()
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
