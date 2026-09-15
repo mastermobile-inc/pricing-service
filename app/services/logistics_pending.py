@@ -152,6 +152,8 @@ def pending_documents(
         Unit.document_number,
         Unit.source_document_type,
         Unit.site_order_number,
+        # Lets the worker add a listed document when the camera cannot read its QR.
+        func.coalesce(Unit.lookup_code, Unit.barcode).label("lookup_code"),
         target.name.label("dropoff_warehouse_name"),
         State.driver_id,
         LogisticsDriver.full_name.label("driver_name"),

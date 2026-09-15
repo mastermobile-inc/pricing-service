@@ -1,3 +1,6 @@
+import { prepareZXingModule, readBarcodes, type ReaderOptions } from "zxing-wasm/reader";
+import zxingWasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
+
 export type CameraCapabilities = MediaTrackCapabilities & {
   zoom?: { min: number; max: number; step?: number };
   focusMode?: string[];
@@ -6,14 +9,52 @@ export type CameraCapabilities = MediaTrackCapabilities & {
 export type CameraSettings = MediaTrackSettings & { zoom?: number; focusDistance?: number };
 type Detector = { detect(image: HTMLVideoElement | HTMLCanvasElement): Promise<Array<{ rawValue?: string }>> };
 
+const READER_OPTIONS: ReaderOptions = {
+  formats: ["QRCode", "Code128", "Code39", "EAN13", "EAN8", "DataMatrix"],
+  tryHarder: true,
+  tryInvert: true,
+  tryRotate: true,
+  maxNumberOfSymbols: 1,
+};
+
+let modulePrepared = false;
+
+// The wasm binary ships with the bundle: Bitrix24 mobile has no access to a CDN.
+function prepareReader() {
+  if (modulePrepared) return;
+  modulePrepared = true;
+  prepareZXingModule({
+    overrides: {
+      locateFile: (path: string, prefix: string) =>
+        path.endsWith(".wasm") ? zxingWasmUrl : `${prefix}${path}`,
+    },
+  });
+}
+
+// Register the local path before anything can start loading the module.
+prepareReader();
+
+/** Read a printed code from a photo or a video frame with the full ZXing engine. */
+export async function decodeBarcodeSource(source: Blob | ImageData): Promise<string> {
+  prepareReader();
+  const results = await readBarcodes(source, READER_OPTIONS);
+  for (const result of results) {
+    const text = result.text?.trim();
+    if (result.isValid && text) return text;
+  }
+  return "";
+}
+
 export function startLogisticsCamera(video: HTMLVideoElement, deviceId: string, callbacks: {
   code: (value: string) => void;
   ready: (track: MediaStreamTrack, cameras: MediaDeviceInfo[]) => void;
   error: (error: unknown) => void;
+  attempt?: (attempts: number) => void;
 }) {
   let active = true;
   let stream: MediaStream | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let attempts = 0;
   const stop = () => {
     active = false;
     clearTimeout(timer);
@@ -49,19 +90,14 @@ export function startLogisticsCamera(video: HTMLVideoElement, deviceId: string, 
       let detector: Detector | undefined;
       const DetectorClass = (window as unknown as { BarcodeDetector?: new (options: object) => Detector }).BarcodeDetector;
       if (DetectorClass) {
-        try { detector = new DetectorClass({ formats: ["qr_code", "code_128", "code_39", "ean_13", "ean_8"] }); } catch { /* use local ZXing */ }
+        try { detector = new DetectorClass({ formats: ["qr_code", "code_128", "code_39", "ean_13", "ean_8"] }); } catch { /* use bundled ZXing */ }
       }
-      let reader: import("@zxing/browser").BrowserMultiFormatReader | undefined;
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d", { willReadFrequently: true });
       const decode = async (frame: HTMLVideoElement | HTMLCanvasElement) => {
+        // The platform detector is free on Android; iOS has none and goes straight to wasm.
         if (detector) {
-          try { const result = await detector.detect(frame); if (result[0]?.rawValue) return result[0].rawValue; } catch { /* local fallback */ }
-        }
-        if (!active) return;
-        if (!reader) {
-          const { BrowserMultiFormatReader } = await import("@zxing/browser");
-          reader = new BrowserMultiFormatReader();
+          try { const result = await detector.detect(frame); if (result[0]?.rawValue) return result[0].rawValue; } catch { /* wasm fallback */ }
         }
         if (!active || !context) return;
         if (frame === video) {
@@ -69,7 +105,10 @@ export function startLogisticsCamera(video: HTMLVideoElement, deviceId: string, 
           canvas.height = video.videoHeight;
           context.drawImage(video, 0, 0);
         }
-        try { return reader.decodeFromCanvas(canvas).getText(); } catch { /* normal undecodable frame */ }
+        if (!canvas.width || !canvas.height) return;
+        try {
+          return await decodeBarcodeSource(context.getImageData(0, 0, canvas.width, canvas.height));
+        } catch { /* normal undecodable frame */ }
       };
       const loop = async () => {
         if (!active) return;
@@ -84,6 +123,8 @@ export function startLogisticsCamera(video: HTMLVideoElement, deviceId: string, 
             value = await decode(canvas);
           }
           if (active && value?.trim()) { callbacks.code(value.trim()); return; }
+          // A silent scanner reads as a broken app, so the UI counts real attempts.
+          if (active) callbacks.attempt?.(++attempts);
         }
         // Schedule only AFTER both decoders/frames finish: no overlapping loops.
         if (active) timer = setTimeout(() => void loop().catch(error => { if (active) callbacks.error(error); }), 150);

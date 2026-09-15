@@ -197,7 +197,7 @@ def _effective_warehouse_id(
         if actor.default_warehouse_id is None:
             raise HTTPException(
                 status_code=422,
-                detail="default logistics warehouse is not configured",
+                detail="Для вашей учётной записи не настроен склад по умолчанию",
             )
         if requested not in (None, actor.default_warehouse_id):
             raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
@@ -278,7 +278,7 @@ def _raise_customer_return_http_error(exc: Exception) -> None:
 def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
     actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
     if actual_type is None:
-        raise HTTPException(status_code=404, detail="draft not found")
+        raise HTTPException(status_code=404, detail="Черновик не найден. Создайте новый")
     if actual_type != expected_type:
         raise HTTPException(status_code=409, detail="draft type does not match endpoint")
 
@@ -288,7 +288,7 @@ def _require_draft_in_pilot(db: Session, draft_id: int) -> None:
         select(LogisticsDraft.warehouse_id).where(LogisticsDraft.id == draft_id)
     )
     if warehouse_id is None:
-        raise HTTPException(status_code=404, detail="draft not found")
+        raise HTTPException(status_code=404, detail="Черновик не найден. Создайте новый")
     logistics_service.require_warehouse_in_scope(
         db,
         warehouse_id=warehouse_id,
@@ -305,7 +305,9 @@ def _require_transfer_visible(db: Session, actor: LogisticsUser, transfer_id: in
         )
         return
     if actor.default_warehouse_id is None:
-        raise HTTPException(status_code=403, detail="default logistics warehouse is not configured")
+        raise HTTPException(
+            status_code=403, detail="Для вашей учётной записи не настроен склад по умолчанию"
+        )
     transfer = db.scalar(
         select(LogisticsTransfer)
         .where(LogisticsTransfer.id == transfer_id)

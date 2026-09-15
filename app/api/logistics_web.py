@@ -177,7 +177,7 @@ def _require_web_role(actor: LogisticsUser, expected: str) -> None:
 def _require_web_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
     actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
     if actual_type is None:
-        raise HTTPException(status_code=404, detail="draft not found")
+        raise HTTPException(status_code=404, detail="Черновик не найден. Создайте новый")
     if actual_type != expected_type:
         raise HTTPException(status_code=409, detail="draft type does not match endpoint")
 
@@ -187,7 +187,7 @@ def _require_web_draft_in_pilot(db: Session, draft_id: int) -> None:
         select(LogisticsDraft.warehouse_id).where(LogisticsDraft.id == draft_id)
     )
     if warehouse_id is None:
-        raise HTTPException(status_code=404, detail="draft not found")
+        raise HTTPException(status_code=404, detail="Черновик не найден. Создайте новый")
     _web_pilot_warehouse_id(db, warehouse_id)
 
 
@@ -212,7 +212,9 @@ def _web_monitor_warehouse_scope(
             )
         return _web_pilot_warehouse_id(db, requested), None
     if actor.default_warehouse_id is None:
-        raise HTTPException(status_code=422, detail="default logistics warehouse is not configured")
+        raise HTTPException(
+            status_code=422, detail="Для вашей учётной записи не настроен склад по умолчанию"
+        )
     if requested not in (None, actor.default_warehouse_id):
         raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
     return _web_pilot_warehouse_id(db, actor.default_warehouse_id), None
@@ -230,7 +232,9 @@ def create_web_session(
 ):
     user = db.get(LogisticsUser, payload.actor_user_id)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=404, detail="logistics user not found")
+        raise HTTPException(
+            status_code=404, detail="Сотрудник не найден в логистике. Обратитесь к администратору"
+        )
     token, _expires_at = _create_session_token(user.id)
     settings = get_settings()
     response.set_cookie(

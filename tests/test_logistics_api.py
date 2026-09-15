@@ -1205,9 +1205,7 @@ def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
         json={"barcode": "BC-0001"},
     )
     assert reassigned_warehouse.status_code == 403
-    assert reassigned_warehouse.json()["detail"] == (
-        "draft warehouse is outside current user assignment"
-    )
+    assert reassigned_warehouse.json()["detail"] == ("Черновик относится к другому складу")
 
     with Session(engine) as session:
         receiver = session.get(LogisticsUser, ids["users"]["Получатель"])

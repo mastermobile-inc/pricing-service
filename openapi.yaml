@@ -25940,6 +25940,11 @@ components:
         source_document_type:
           type: string
           title: Source Document Type
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
         site_order_number:
           anyOf:
           - type: string
