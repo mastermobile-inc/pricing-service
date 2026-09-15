@@ -47,6 +47,7 @@ from app.services.site_service_requests_worker import (
     decide_site_service_assignment,
     deliver_site_service_request_daily_report,
     next_site_service_request_retry_at,
+    normalize_order_number,
     normalize_site_service_email,
     normalize_site_service_phone,
     preflight_site_service_request_users,
@@ -5793,3 +5794,56 @@ def test_unknown_close_reason_does_not_release_the_gate(db_session) -> None:
     db_session.refresh(case)
     assert case.closed_without_response_at is None
     assert case.close_without_response_reason is None
+
+
+def test_order_number_normalization_strips_human_prefix() -> None:
+    """«№ 246936» и «246936» — один и тот же заказ."""
+
+    assert normalize_order_number("№ 246936") == "246936"
+    assert normalize_order_number("N 246936") == "246936"
+    assert normalize_order_number("#246936") == "246936"
+    assert normalize_order_number("  246936 ") == "246936"
+    assert normalize_order_number("№ 240188 от 18.08.2026, 09:20") == "240188"
+    assert normalize_order_number("242897 от 27.08.2026, 12:42") == "242897"
+    assert normalize_order_number("РБ000065170") == "РБ000065170"
+    assert normalize_order_number("РБГУ0066575") == "РБГУ0066575"
+    assert normalize_order_number(None) == ""
+    assert contains_exact_order_token("Заказ интернет-магазина №246936", "№ 246936") is True
+    assert contains_exact_order_token("Заказ интернет-магазина №1246936", "№ 246936") is False
+
+
+def test_prefixed_order_number_still_disambiguates_duplicate_contacts() -> None:
+    """Тикет №784: номер пришёл как «№ 246936», заказ и клиент всё равно находятся."""
+
+    class ContactScopedOrderApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact_value = next(
+                    (value for key, value in values if key.startswith("filter[=")), None
+                )
+                if contact_id == 71128 and exact_value == "246936":
+                    return {"result": [{"ID": "40117", "TITLE": "Заказ интернет-магазина №246936"}]}
+                return {"result": []}
+            return super().call(method, values, **kwargs)
+
+    api = ContactScopedOrderApi()
+    api.phone_contacts = [71127, 71128]
+    api.contacts[71127] = {"ID": "71127", "COMPANY_ID": None}
+    api.contacts[71128] = {"ID": "71128", "COMPANY_ID": None}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous_contact = reader.find_contact(phone="+79877185855", email=None)
+    contact, order = reader.resolve_contact_and_order(
+        contact=ambiguous_contact,
+        order_number="№ 246936",
+        order_field="UF_CRM_1772784329053",
+    )
+
+    assert ambiguous_contact.status == "ambiguous"
+    assert contact.status == "matched"
+    assert contact.contact_id == 71128
+    assert order.status == "matched"
+    assert order.deal_id == 40117

@@ -34,6 +34,8 @@ from app.services.site_service_requests import (
 )
 
 _RETRY_DELAYS_SECONDS = (60, 120, 300, 900, 1800)
+_ORDER_NUMBER_PREFIX_RE = re.compile(r"^(?:№|N[оo]?\.?|#)\s*", re.IGNORECASE)
+_ORDER_NUMBER_TAIL_RE = re.compile(r"[\s,;]+")
 _MISSING_ITEM_FIELD = object()
 _DEFAULT_FIELD_MAP = {
     "source": "UF_CRM_36_SOURCE",
@@ -377,7 +379,7 @@ class SiteServiceRequestBitrixReader:
                 order_field=order_field,
             )
 
-        normalized_order = (order_number or "").strip()
+        normalized_order = normalize_order_number(order_number)
         if not normalized_order or not contact.candidate_ids:
             return contact, OrderMatch(status="not_found")
 
@@ -442,7 +444,7 @@ class SiteServiceRequestBitrixReader:
         order_number: str | None,
         order_field: str | None,
     ) -> OrderMatch:
-        normalized_order = (order_number or "").strip()
+        normalized_order = normalize_order_number(order_number)
         if contact_id is None or not normalized_order:
             return OrderMatch(status="not_found")
 
@@ -1256,8 +1258,24 @@ def normalize_site_service_email(value: str | None) -> str | None:
     return normalized or None
 
 
+def normalize_order_number(value: str | None) -> str:
+    """Номер заказа без человеческой обвязки: «№ 246936 от 18.08.2026, 09:20» -> «246936».
+
+    Сайт и клиенты пишут номер как «№ 246936», «N 246936», «#246936» или с хвостом
+    «от <дата>, <время>», а сделка хранит его голым. Без нормализации точный поиск
+    не находил заказ, карточка оставалась без клиента и заказа, и дубли контактов
+    было нечем развести. Буквенные номера вроде «РБГУ0066575» не меняются.
+    """
+
+    text = (value or "").strip()
+    text = _ORDER_NUMBER_PREFIX_RE.sub("", text).strip()
+    if not text:
+        return ""
+    return _ORDER_NUMBER_TAIL_RE.split(text, maxsplit=1)[0].strip()
+
+
 def contains_exact_order_token(title: str | None, order_number: str) -> bool:
-    normalized_order = order_number.strip()
+    normalized_order = normalize_order_number(order_number)
     if not normalized_order:
         return False
     if normalized_order.isdigit():
@@ -3885,7 +3903,7 @@ def _apply_site_service_request_worker_plan(
     base_sync_status, base_error_code = _case_sync_status(
         contact_status=contact_status,
         order_status=order.status,
-        has_order_number=bool(payload.ticket.order_number),
+        has_order_number=bool(normalize_order_number(payload.ticket.order_number)),
         assignment_state=assignment.state,
         file_error_code=None,
     )
