@@ -443,3 +443,19 @@ class SiteServiceRequestReturnsResponse(BaseModel):
 
     can_register: bool = Field(alias="canRegister")
     returns: list[CustomerReturnShipmentResponse]
+
+
+class SiteServiceRequestOrderStatusResponse(BaseModel):
+    """Где сейчас заказ клиента — для подсказки «Где заказ» во вкладке переписки."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    deal_id: int = Field(alias="dealId")
+    order_ref: str | None = Field(default=None, alias="orderRef")
+    tracking: str | None = None
+    status_text: str | None = Field(default=None, alias="statusText")
+    tracking_link: str | None = Field(default=None, alias="trackingLink")
+    planned_delivery_date: str | None = Field(default=None, alias="plannedDeliveryDate")
+    storage_date: str | None = Field(default=None, alias="storageDate")
+    multiple_shipments: bool = Field(default=False, alias="multipleShipments")
+    customer_message: str = Field(default="", alias="customerMessage")

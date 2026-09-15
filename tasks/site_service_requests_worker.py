@@ -31,6 +31,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixWriter,
     SiteServiceRequestFileCleanup,
     apply_site_service_request_worker_plans,
+    auto_close_silent_site_service_requests,
     build_site_service_request_worker_plans,
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
@@ -38,6 +39,7 @@ from app.services.site_service_requests_worker import (
     escalate_overdue_site_service_replies,
     preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
+    reconcile_site_service_request_return_stages,
     resolved_site_service_request_field_map,
     safe_site_service_request_plan_dict,
     sync_staged_site_service_request_files,
@@ -196,6 +198,18 @@ def _run_worker(
                 writer=SiteServiceRequestBitrixWriter(resolved_api),
                 limit=args.limit,
             )
+            auto_closed = auto_close_silent_site_service_requests(
+                session,
+                settings=settings,
+                writer=SiteServiceRequestBitrixWriter(resolved_api),
+                limit=args.limit,
+            )
+            return_stages = reconcile_site_service_request_return_stages(
+                session,
+                settings=settings,
+                writer=SiteServiceRequestBitrixWriter(resolved_api),
+                limit=args.limit,
+            )
             files = sync_staged_site_service_request_files(
                 session,
                 settings=settings,
@@ -236,6 +250,8 @@ def _run_worker(
                 "emailCount": len(email_results),
                 "assignments": assignments,
                 "awaitingReplies": awaiting_replies,
+                "autoClosed": auto_closed,
+                "returnStages": return_stages,
                 "files": files,
                 "commands": commands,
                 "dailyReport": daily_report,
