@@ -405,3 +405,21 @@ def test_scan_accepts_typed_document_number(db):
     assert scan(db, handoff["id"])["scan_result"] == "already_scanned"
     with pytest.raises(HTTPException, match="Документ не найден"):
         scan(db, handoff["id"], code="РТУ-404")
+
+
+def test_scan_repairs_russian_layout_and_scanner_prefix(db):
+    seed(db)
+    handoff = draft(db)
+    ref = logistics.normalize_mm_log_document_ref("1")
+    code = f"MMLOG1|rtu|{ref}|123"
+    # The 1C scanners prepend F7, and a Russian layout mangles the printed code.
+    russian = code.translate(
+        str.maketrans(
+            "qwertyuiop[]asdfghjkl;'zxcvbnm,.QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>\\|",
+            "йцукенгшщзхъфывапролджэячсмитьбюЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮёЁ",
+        )
+    )
+    assert russian != code
+    assert scan(db, handoff["id"], code=f"F7{russian}")["item_count"] == 1
+    # A typed document number stays untouched by the layout repair.
+    assert scan(db, handoff["id"], code="РТУ-2")["item_count"] == 2
