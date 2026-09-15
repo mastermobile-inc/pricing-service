@@ -19,6 +19,7 @@ from app.schemas.site_service_requests import (
     SiteServiceRequestConversationMutationResponse,
     SiteServiceRequestConversationResponse,
     SiteServiceRequestInternalNoteRequest,
+    SiteServiceRequestOrderStatusResponse,
     SiteServiceRequestReturnCreateRequest,
     SiteServiceRequestReturnsResponse,
     SiteServiceRequestUiSessionRequest,
@@ -27,6 +28,7 @@ from app.schemas.site_service_requests import (
 )
 from app.services import customer_return_service_requests as customer_return_request_service
 from app.services import customer_returns as customer_return_service
+from app.services import site_service_request_order_status as order_status_service
 from app.services.customer_return_carriers import CustomerReturnCarrierError
 from app.services.site_service_request_conversations import (
     build_site_service_request_conversation,
@@ -499,6 +501,56 @@ def item_returns(
             "returns": shipments,
         }
     )
+
+
+@router.get(
+    "/items/{item_id}/order-status",
+    response_model=SiteServiceRequestOrderStatusResponse,
+)
+def item_order_status(
+    item_id: int,
+    response: Response,
+    ui_session: SiteServiceRequestUiSession = Depends(require_site_service_request_ui_session),
+    settings: Settings = Depends(get_settings),
+    db: Session = Depends(get_db),
+) -> SiteServiceRequestOrderStatusResponse:
+    """Где сейчас заказ клиента — для подсказки «Где заказ» во вкладке переписки.
+
+    Право на запись не требуется: это чтение, и видеть статус полезно всем, кто
+    открыл карточку.
+    """
+
+    response.headers["Cache-Control"] = "private, no-store"
+    _require_item(ui_session, item_id)
+    try:
+        case = get_site_service_request_case_for_ui(db, item_id=item_id)
+    except SiteServiceRequestNotFoundError:
+        # Карточку могли завести в Битриксе руками, до нашей базы она не дошла.
+        case = None
+    deal_id = case.crm_deal_id if case is not None else None
+    if deal_id is None:
+        # Сделку могли привязать в самой карточке, минуя нашу базу.
+        try:
+            deal_id = customer_return_request_service.get_customer_return_service_request(
+                settings=settings,
+                item_id=item_id,
+            ).deal_id
+        except customer_return_request_service.CustomerReturnServiceRequestNotFound as exc:
+            raise HTTPException(status_code=404, detail="order_status_deal_unknown") from exc
+        except customer_return_request_service.CustomerReturnServiceRequestUnavailable as exc:
+            raise HTTPException(status_code=503, detail="order_status_unavailable") from exc
+    if deal_id is None:
+        raise HTTPException(status_code=404, detail="order_status_deal_unknown")
+    try:
+        status = order_status_service.get_site_service_request_order_status(
+            settings=settings,
+            deal_id=int(deal_id),
+        )
+    except order_status_service.SiteServiceRequestOrderStatusNotFound as exc:
+        raise HTTPException(status_code=404, detail="order_status_deal_unknown") from exc
+    except order_status_service.SiteServiceRequestOrderStatusUnavailable as exc:
+        raise HTTPException(status_code=503, detail="order_status_unavailable") from exc
+    return SiteServiceRequestOrderStatusResponse.model_validate(status, from_attributes=True)
 
 
 @router.post(

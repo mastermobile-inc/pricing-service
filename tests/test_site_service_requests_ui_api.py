@@ -354,3 +354,122 @@ def test_returns_tab_keeps_other_cards_out_of_scope(client, db_session, monkeypa
 
     assert foreign_list.status_code == 403
     assert foreign_create.status_code == 403
+
+
+def _order_status(**overrides):
+    from app.services.site_service_request_order_status import SiteServiceRequestOrderStatus
+
+    values = {
+        "deal_id": 33485,
+        "order_ref": "240315",
+        "tracking": "10311127882",
+        "status_text": "Вручен 26.08.2026 14:58",
+        "tracking_link": "https://www.cdek.ru/ru/tracking/?order_id=10311127882",
+        "planned_delivery_date": None,
+        "storage_date": None,
+        "multiple_shipments": False,
+        "customer_message": "Здравствуйте! По вашему заказу №240315: Вручен 26.08.2026 14:58.",
+    }
+    values.update(overrides)
+    return SiteServiceRequestOrderStatus(**values)
+
+
+def test_order_status_is_read_from_the_linked_deal(client, db_session, monkeypatch):
+    """Кнопка «Где заказ» берёт сделку из карточки и отдаёт готовый текст."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    db_session.add(
+        SiteServiceRequestCase(
+            source_ticket_id=746,
+            first_seen_at=datetime.now(UTC),
+            bitrix_item_id=391,
+            crm_deal_id=33485,
+            assignment_state="waiting",
+            round_robin_seq=0,
+            sync_status="synced",
+        )
+    )
+    db_session.commit()
+    captured: dict[str, int] = {}
+
+    def _fake(*, settings, deal_id):
+        captured["dealId"] = deal_id
+        return _order_status()
+
+    monkeypatch.setattr(
+        ui_module.order_status_service,
+        "get_site_service_request_order_status",
+        _fake,
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 200
+    assert captured["dealId"] == 33485
+    body = response.json()
+    assert body["dealId"] == 33485
+    assert body["multipleShipments"] is False
+    assert body["customerMessage"].startswith("Здравствуйте! По вашему заказу №240315")
+
+
+def test_order_status_without_a_known_deal_is_not_found(client, db_session, monkeypatch):
+    """Заказ не привязан ни в базе, ни в карточке — подставлять нечего."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "order_status_deal_unknown"
+
+
+def test_order_status_survives_an_unavailable_bitrix(client, db_session, monkeypatch):
+    """Недоступный портал — это «попробуйте позже», а не ошибка карточки."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    db_session.add(
+        SiteServiceRequestCase(
+            source_ticket_id=747,
+            first_seen_at=datetime.now(UTC),
+            bitrix_item_id=391,
+            crm_deal_id=33485,
+            assignment_state="waiting",
+            round_robin_seq=0,
+            sync_status="synced",
+        )
+    )
+    db_session.commit()
+
+    def _unavailable(**_kwargs):
+        raise ui_module.order_status_service.SiteServiceRequestOrderStatusUnavailable("нет связи")
+
+    monkeypatch.setattr(
+        ui_module.order_status_service,
+        "get_site_service_request_order_status",
+        _unavailable,
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "order_status_unavailable"
+
+
+def test_order_status_is_refused_for_another_card(client, db_session):
+    """Сессия открыта на одну карточку — чужой заказ через неё не посмотреть."""
+
+    with _ui_dependencies(db_session, item_id=391):
+        response = client.get("/api/site-service-requests/ui/items/999/order-status")
+
+    assert response.status_code == 403
