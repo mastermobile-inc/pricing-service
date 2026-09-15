@@ -4064,6 +4064,14 @@ def _apply_site_service_request_worker_plan(
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
 
+    if confirmed_outbound_reply and not awaiting_started:
+        _apply_stage_after_customer_reply(
+            settings=settings,
+            writer=writer,
+            item_id=item_id,
+            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+        )
+
     if awaiting_started:
         _handle_awaiting_reply_started(
             case=case,
@@ -4098,6 +4106,37 @@ def _apply_site_service_request_worker_plan(
     )
 
 
+def _apply_stage_after_customer_reply(
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    item_id: int,
+    current_stage_id: str,
+) -> None:
+    """Ответили клиенту — карточка уходит ждать его ответа.
+
+    Стадию иначе переключают руками, а значит забывают: «В работе» перестаёт
+    отличать обращения, которыми занимаются, от тех, где ждут клиента. Трогаем
+    только стадии, где ничего своего не происходит: экспертиза, возврат и закрытые
+    карточки живут по собственным правилам.
+    """
+
+    stage_map = settings.site_service_requests_bitrix_stage_map or {}
+    client_stage = str(stage_map.get("client") or "").strip()
+    if not client_stage:
+        return
+    movable = {str(stage_map.get(key) or "").strip() for key in ("new", "work")} - {""}
+    if current_stage_id not in movable:
+        return
+    updated = writer.update_item_fields(
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        item_id=item_id,
+        fields={"stageId": client_stage},
+    )
+    if str(_item_field_value(updated, "stageId") or "") != client_stage:
+        raise RuntimeError("bitrix_reply_stage_readback_failed")
+
+
 def _handle_awaiting_reply_started(
     *,
     case: SiteServiceRequestCase,
@@ -4117,7 +4156,9 @@ def _handle_awaiting_reply_started(
     stage_map = settings.site_service_requests_bitrix_stage_map or {}
     client_stage = str(stage_map.get("client") or "").strip()
     work_stage = str(stage_map.get("work") or "").strip()
-    if client_stage and work_stage and current_stage_id == client_stage:
+    closed_stages = {str(stage_map.get(key) or "").strip() for key in ("success", "failure")} - {""}
+    reopened = bool(work_stage) and current_stage_id in closed_stages
+    if work_stage and (reopened or (client_stage and current_stage_id == client_stage)):
         updated = writer.update_item_fields(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
             item_id=item_id,
@@ -4125,6 +4166,24 @@ def _handle_awaiting_reply_started(
         )
         if str(_item_field_value(updated, "stageId") or "") != work_stage:
             raise RuntimeError("bitrix_awaiting_reply_stage_readback_failed")
+    if reopened:
+        # Закрытая карточка, ожившая сама по себе, читается как сбой процесса:
+        # в ленте должно быть видно, что её открыл клиент, а не человек или робот.
+        try:
+            writer.add_timeline_comment(
+                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                item_id=item_id,
+                comment=(
+                    "Клиент написал после закрытия — обращение снова в работе. "
+                    f"[site-service-reopened:{case.id}]"
+                ),
+            )
+        except RuntimeError:
+            pass
+        # Прежняя причина закрытия описывает уже закрытый разговор: оставить её —
+        # значит разрешить закрыть карточку снова без ответа на новое сообщение.
+        case.closed_without_response_at = None
+        case.close_without_response_reason = None
 
     user_id = case.assigned_user_id
     if user_id is None:

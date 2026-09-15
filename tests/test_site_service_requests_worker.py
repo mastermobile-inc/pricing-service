@@ -37,6 +37,8 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestFileCleanup,
     SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
+    _apply_stage_after_customer_reply,
+    _handle_awaiting_reply_started,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
     choose_site_service_assignee,
@@ -5995,3 +5997,102 @@ def test_reply_within_the_deadline_is_not_escalated(db_session) -> None:
 
     assert results == []
     assert api.timeline_comments == []
+
+
+def _stage_settings(**overrides) -> Settings:
+    return _worker_settings(
+        site_service_requests_bitrix_stage_map={
+            "new": "DT1134_55:NEW",
+            "work": "DT1134_55:PREPARATION",
+            "client": "DT1134_55:CLIENT",
+            "success": "DT1134_55:SUCCESS",
+            "failure": "DT1134_55:FAIL",
+        },
+        **overrides,
+    )
+
+
+def test_reply_moves_the_card_to_waiting_for_the_customer() -> None:
+    """Ответили — карточка уходит ждать клиента, руками переключать не нужно."""
+
+    api = FakeBitrixApi()
+    api.items[500] = {"id": "500", "stageId": "DT1134_55:PREPARATION"}
+
+    _apply_stage_after_customer_reply(
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        item_id=500,
+        current_stage_id="DT1134_55:PREPARATION",
+    )
+
+    assert api.items[500]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_reply_does_not_touch_expertise_or_closed_stages() -> None:
+    """Экспертиза, возврат и закрытые карточки живут по своим правилам."""
+
+    settings = _stage_settings()
+    for stage in ("DT1134_55:NEED_EXPERTISE", "DT1134_55:REFUND_DECISION", "DT1134_55:SUCCESS"):
+        api = FakeBitrixApi()
+        api.items[501] = {"id": "501", "stageId": stage}
+
+        _apply_stage_after_customer_reply(
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            item_id=501,
+            current_stage_id=stage,
+        )
+
+        assert api.items[501]["stageId"] == stage
+
+
+def test_customer_message_reopens_a_closed_card(db_session) -> None:
+    """Клиент написал в закрытую карточку — она возвращается в работу с пометкой."""
+
+    api = FakeBitrixApi()
+    api.items[502] = {"id": "502", "stageId": "DT1134_55:SUCCESS"}
+    case = _case(
+        bitrix_item_id=502,
+        assigned_user_id=131016,
+        closed_without_response_at=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+        close_without_response_reason="resolved_elsewhere",
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    _handle_awaiting_reply_started(
+        case=case,
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        item_id=502,
+        current_stage_id="DT1134_55:SUCCESS",
+        now=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+    )
+
+    assert api.items[502]["stageId"] == "DT1134_55:PREPARATION"
+    assert any("site-service-reopened" in row["COMMENT"] for row in api.timeline_comments)
+    assert case.closed_without_response_at is None
+    assert case.close_without_response_reason is None
+    assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
+
+
+def test_customer_message_returns_the_card_from_waiting_to_work(db_session) -> None:
+    """Из «Ожидаем клиента» карточка возвращается в работу без пометки о переоткрытии."""
+
+    api = FakeBitrixApi()
+    api.items[503] = {"id": "503", "stageId": "DT1134_55:CLIENT"}
+    case = _case(bitrix_item_id=503, assigned_user_id=131016)
+    db_session.add(case)
+    db_session.commit()
+
+    _handle_awaiting_reply_started(
+        case=case,
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        item_id=503,
+        current_stage_id="DT1134_55:CLIENT",
+        now=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+    )
+
+    assert api.items[503]["stageId"] == "DT1134_55:PREPARATION"
+    assert not any("site-service-reopened" in row["COMMENT"] for row in api.timeline_comments)
