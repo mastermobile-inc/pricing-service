@@ -141,6 +141,16 @@ class SiteServiceRequestCase(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    awaiting_reply_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    awaiting_reply_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    awaiting_reply_escalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     latest_inbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latest_outbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     conversation_snapshot_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

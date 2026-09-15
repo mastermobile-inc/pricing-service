@@ -111,6 +111,11 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "first_response_due_at", "title": "Ответить клиенту до", "type": "datetime"},
     {"key": "first_response_at", "title": "Ответ доставлен клиенту", "type": "datetime"},
     {
+        "key": "awaiting_reply_since",
+        "title": "Клиент ждёт ответа с",
+        "type": "datetime",
+    },
+    {
         "key": "site_sync_error",
         "title": "Техническая ошибка синхронизации",
         "type": "string",
@@ -130,16 +135,20 @@ FORM_SECTIONS = (
         "main",
         "Обращение",
         (
-            "STAGE_ID",
             "TITLE",
+            "STAGE_ID",
             "ASSIGNED_BY_ID",
             "UF_CRM_36_CUSTOMERREQUESTCHOICE",
+            "UF_CRM_36_PROBLEMTYPECHOICE",
             "UF_CRM_36_PRIORITYCHOICE",
-            "mail_activity_id",
-            "mail_activity_url",
             "first_response_due_at",
             "first_response_at",
-            "site_sync_status",
+            "awaiting_reply_since",
+            "close_without_response_reason",
+            "UF_CRM_36_PROBLEMDESCRIPTION",
+            "UF_CRM_36_PRODUCTMODEL",
+            "UF_CRM_36_CLIENTFILES",
+            "site_ticket_url",
         ),
     ),
     (
@@ -151,22 +160,11 @@ FORM_SECTIONS = (
             "UF_CRM_36_CUSTOMERCONTACT",
             "UF_CRM_36_CRMDEAL",
             "UF_CRM_36_ORDERREFS",
-            "site_ticket_url",
         ),
     ),
     (
-        "case",
-        "Сообщение клиента",
-        (
-            "UF_CRM_36_PRODUCTMODEL",
-            "UF_CRM_36_PROBLEMDESCRIPTION",
-            "UF_CRM_36_PROBLEMTYPECHOICE",
-            "UF_CRM_36_CLIENTFILES",
-        ),
-    ),
-    (
-        "return_economics",
-        "Экономика возврата",
+        "decision",
+        "Решение и возврат",
         (
             "UF_CRM_36_ITEMVALUE",
             "UF_CRM_36_ESTIMATEDRETURNCOST",
@@ -174,32 +172,17 @@ FORM_SECTIONS = (
             "UF_CRM_36_RETURNGOODSDECISION",
             "UF_CRM_36_RETURNLEAVEREASON",
             "return_decision_approved_by_user",
-        ),
-    ),
-    (
-        "work",
-        "Решение и дальнейшие действия",
-        (
-            "UF_CRM_36_NEXTACTION",
             "UF_CRM_36_LINKEDEXPERTISECRM",
-            "UF_CRM_36_RETURNCARRIER",
-            "UF_CRM_36_RETURNTRACKINGNUMBER",
-            "UF_CRM_36_RETURNTRACKINGCREATEDAT",
-            "UF_CRM_36_RETURNSTATUS",
             "UF_CRM_36_DECISIONRESULT",
-            "close_without_response_reason",
-            "UF_CRM_36_WORKINGFILESURL",
-        ),
-    ),
-    (
-        "hints",
-        "Подсказки для сотрудника",
-        (
-            "UF_CRM_36_NUMBERS",
-            "UF_CRM_36_ANALYSISHINTS",
         ),
     ),
 )
+
+# Поля движения посылки (перевозчик, трек, дата трека, статус возврата) в карточке
+# не выводятся: возврат живёт в реестре логистики и показывается вкладкой
+# «Возврат товара». Технические поля — ключи, внутренние номера, ошибки
+# синхронизации, подсказки и остатки старого чата — скрыты из формы намеренно:
+# сотруднику они не нужны, а карточка от них становится нечитаемой.
 
 LEGACY_FIELD_TITLE_OVERRIDES = {
     "source": "Источник обращения",

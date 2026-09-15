@@ -35,6 +35,7 @@ from app.services.site_service_requests_worker import (
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
     deliver_site_service_request_daily_report,
+    escalate_overdue_site_service_replies,
     preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
     resolved_site_service_request_field_map,
@@ -189,6 +190,12 @@ def _run_worker(
                 writer=SiteServiceRequestBitrixWriter(resolved_api),
                 limit=args.limit,
             )
+            awaiting_replies = escalate_overdue_site_service_replies(
+                session,
+                settings=settings,
+                writer=SiteServiceRequestBitrixWriter(resolved_api),
+                limit=args.limit,
+            )
             files = sync_staged_site_service_request_files(
                 session,
                 settings=settings,
@@ -228,6 +235,7 @@ def _run_worker(
                 ],
                 "emailCount": len(email_results),
                 "assignments": assignments,
+                "awaitingReplies": awaiting_replies,
                 "files": files,
                 "commands": commands,
                 "dailyReport": daily_report,

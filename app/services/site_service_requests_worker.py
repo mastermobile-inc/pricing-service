@@ -49,6 +49,7 @@ _DEFAULT_FIELD_MAP = {
     "files": "UF_CRM_36_CLIENTFILES",
     "backend_case_id": "UF_CRM_36_BACKENDCASEID",
     "idempotency_key": "UF_CRM_36_IDEMPOTENCYKEY",
+    "awaiting_reply_since": "UF_CRM_36_AWAITINGREPLYSINCE",
 }
 _REQUIRED_WORKER_FIELD_KEYS = {
     "site_ticket_id",
@@ -3375,6 +3376,90 @@ def _deliver_site_service_request_close_gate_notice(
     return True
 
 
+def escalate_overdue_site_service_replies(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Эскалирует обращения, где ответ клиенту просрочен не в первый раз.
+
+    Срок первого ответа контролирует назначение, а повторные сообщения клиента до
+    этого не отслеживались вовсе. Правило одно и то же: те же часы на ответ, а по
+    их истечении — комментарий в карточку и уведомление руководителю.
+    """
+
+    if not settings.site_service_requests_bitrix_writes_enabled:
+        return []
+    current_time = _as_utc(now or datetime.now(UTC))
+    deadline = current_time - timedelta(hours=settings.site_service_requests_first_response_hours)
+    batch_limit = _site_service_request_worker_limit(settings, limit=limit)
+    rows = session.scalars(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.bitrix_item_id.is_not(None),
+            SiteServiceRequestCase.awaiting_reply_since.is_not(None),
+            SiteServiceRequestCase.awaiting_reply_escalated_at.is_(None),
+            SiteServiceRequestCase.awaiting_reply_since <= deadline,
+        )
+        .order_by(SiteServiceRequestCase.awaiting_reply_since)
+        .limit(batch_limit)
+    ).all()
+
+    results: list[dict[str, Any]] = []
+    for case in rows:
+        marker = f"[site-service-awaiting-reply:{case.id}]"
+        label = (
+            "сервисному email-обращению"
+            if case.source_kind == "bitrix_mail"
+            else f"обращению сайта #{case.source_ticket_id}"
+        )
+        waiting_since = _as_utc(case.awaiting_reply_since)
+        try:
+            writer.add_timeline_comment(
+                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                comment=(
+                    f"Клиент ждёт ответа с {waiting_since.strftime('%d.%m.%Y %H:%M')} — "
+                    f"дольше {settings.site_service_requests_first_response_hours} ч. {marker}"
+                ),
+            )
+            if settings.site_service_requests_escalation_user_id is not None:
+                writer.notify_user(
+                    user_id=settings.site_service_requests_escalation_user_id,
+                    message=(
+                        f"Ответ клиенту по {label} просрочен: "
+                        f"клиент написал {waiting_since.strftime('%d.%m.%Y %H:%M')} "
+                        "и ответа до сих пор нет."
+                    ),
+                    tag=f"mm-site-service-awaiting-escalation:{case.id}",
+                )
+        except RuntimeError as exc:
+            results.append(
+                {
+                    "caseId": case.id,
+                    "ticketId": case.source_ticket_id,
+                    "escalated": False,
+                    "errorCode": str(exc),
+                }
+            )
+            session.rollback()
+            continue
+        case.awaiting_reply_escalated_at = current_time
+        session.commit()
+        results.append(
+            {
+                "caseId": case.id,
+                "ticketId": case.source_ticket_id,
+                "escalated": True,
+                "awaitingSince": waiting_since.isoformat(),
+            }
+        )
+    return results
+
+
 def reconcile_site_service_request_assignments(
     session: Session,
     *,
@@ -3794,6 +3879,10 @@ def _apply_site_service_request_worker_plan(
         case=case,
         payload=payload,
     )
+    awaiting_started = _apply_awaiting_reply_state(
+        case,
+        awaiting_since=compute_awaiting_reply_since(payload, case=case),
+    )
 
     if case.crm_contact_id is not None:
         contact = ContactMatch(
@@ -3975,6 +4064,16 @@ def _apply_site_service_request_worker_plan(
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
 
+    if awaiting_started:
+        _handle_awaiting_reply_started(
+            case=case,
+            settings=settings,
+            writer=writer,
+            item_id=item_id,
+            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+            now=now,
+        )
+
     case.bitrix_item_id = item_id
     case.base_sync_status = base_sync_status
     case.base_error_code = base_error_code
@@ -3997,6 +4096,121 @@ def _apply_site_service_request_worker_plan(
         bitrix_item_id=item_id,
         error_code=error_code,
     )
+
+
+def _handle_awaiting_reply_started(
+    *,
+    case: SiteServiceRequestCase,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    item_id: int,
+    current_stage_id: str,
+    now: datetime,
+) -> None:
+    """Клиент написал снова: вернуть карточку в работу и сказать об этом сотруднику.
+
+    Обращение, оставленное в «Ожидаем клиента», после ответа клиента выглядит так,
+    будто от нас ничего не ждут, и висит неотвеченным. Уведомление и стадия —
+    единственные два места, куда сотрудник действительно смотрит.
+    """
+
+    stage_map = settings.site_service_requests_bitrix_stage_map or {}
+    client_stage = str(stage_map.get("client") or "").strip()
+    work_stage = str(stage_map.get("work") or "").strip()
+    if client_stage and work_stage and current_stage_id == client_stage:
+        updated = writer.update_item_fields(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            fields={"stageId": work_stage},
+        )
+        if str(_item_field_value(updated, "stageId") or "") != work_stage:
+            raise RuntimeError("bitrix_awaiting_reply_stage_readback_failed")
+
+    user_id = case.assigned_user_id
+    if user_id is None:
+        return
+    try:
+        writer.notify_user(
+            user_id=user_id,
+            message=(
+                "Клиент ответил по "
+                + (
+                    "сервисному email-обращению."
+                    if case.source_kind == "bitrix_mail"
+                    else f"сервисному обращению сайта #{case.source_ticket_id}."
+                )
+                + " Обращение снова ждёт ответа."
+            ),
+            tag=f"mm-site-service-awaiting-reply:{case.id}:{int(now.timestamp())}",
+        )
+    except RuntimeError:
+        # Уведомление — подсказка, а не состояние контура: недоступный IM не должен
+        # отменять уже подтверждённую запись карточки и переобрабатывать событие.
+        return
+    case.awaiting_reply_notified_at = now
+
+
+def compute_awaiting_reply_since(
+    payload: SiteServiceRequestEventPayload,
+    *,
+    case: SiteServiceRequestCase,
+) -> datetime | None:
+    """С какого момента обращение ждёт ответа поддержки, либо ``None``.
+
+    Срок первого ответа виден в карточке, а дальше переписка шла без единого
+    признака: сотрудник не замечал, что клиент написал снова, и обращение висело
+    неотвеченным. Считаем по истории: берём последний видимый клиенту ответ
+    поддержки и первое сообщение клиента после него.
+    """
+
+    support_last: datetime | None = None
+    for message in payload.history:
+        if (
+            message.author_kind in {"support", "support-team", "support_team"}
+            and message.is_visible_to_customer
+        ):
+            created = _as_utc(message.created_at)
+            if support_last is None or created > support_last:
+                support_last = created
+
+    customer_after: datetime | None = None
+    for message in payload.history:
+        if message.author_kind != "customer":
+            continue
+        created = _as_utc(message.created_at)
+        if support_last is not None and created <= support_last:
+            continue
+        if customer_after is None or created < customer_after:
+            customer_after = created
+
+    if customer_after is None:
+        return None
+    if case.first_response_at is None and support_last is None:
+        # Первый ответ ещё не давали: этим сроком уже управляет SLA первого ответа,
+        # второй счётчик на ту же паузу только задваивал бы уведомления.
+        return None
+    return customer_after
+
+
+def _apply_awaiting_reply_state(
+    case: SiteServiceRequestCase,
+    *,
+    awaiting_since: datetime | None,
+) -> bool:
+    """Обновляет отметку ожидания. Возвращает True, если ожидание только началось."""
+
+    previous = _as_utc(case.awaiting_reply_since) if case.awaiting_reply_since else None
+    if awaiting_since is None:
+        case.awaiting_reply_since = None
+        case.awaiting_reply_notified_at = None
+        case.awaiting_reply_escalated_at = None
+        return False
+    if previous is not None and previous == awaiting_since:
+        return False
+    case.awaiting_reply_since = awaiting_since
+    case.awaiting_reply_notified_at = None
+    case.awaiting_reply_escalated_at = None
+    return True
 
 
 def _confirm_site_service_request_command_readback(
@@ -4224,6 +4438,7 @@ def _site_service_request_item_fields(
         field_map["site_last_sync_at"]: now,
         field_map["first_response_due_at"]: case.first_response_due_at,
         field_map["first_response_at"]: case.first_response_at,
+        field_map["awaiting_reply_since"]: case.awaiting_reply_since,
         field_map["site_sync_error"]: error_code,
     }
     if confirmed_outbound_reply:
