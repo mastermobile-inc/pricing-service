@@ -6,7 +6,31 @@ import { CustomerReturnsWorkspace } from "./CustomerReturnsWorkspace";
 import { LogisticsPendingPanel } from "./LogisticsPendingPanel";
 import { useLogisticsScanQueue } from "./useLogisticsScanQueue";
 import { DraftRouteControl, LogisticsRerouteDialog, type RoutedItem, type RerouteItem } from "./LogisticsRouteControls";
-import { startLogisticsCamera, type CameraCapabilities, type CameraSettings } from "./logisticsCamera";
+import {
+  decodeBarcodeSource,
+  startLogisticsCamera,
+  type CameraCapabilities,
+  type CameraSettings,
+} from "./logisticsCamera";
+
+const SLOW_SCAN_HINT_MS = 6000;
+
+/** A silent scanner reads as a broken app: say why nothing happens. */
+function SlowScanHint({ hasFrames }: { hasFrames: () => boolean }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), SLOW_SCAN_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  if (!visible) return null;
+  return (
+    <p className="logistics__message logistics__message--error">
+      {hasFrames()
+        ? "Код пока не читается. Расправьте плёнку над кодом, держите телефон в 15–20 см и наклоните пакет от блика. Можно снять код на фото или закрыть сканер и ввести номер накладной вручную."
+        : "Камера не передаёт кадры. Закройте сканер и откройте заново, снимите код на фото или введите номер накладной вручную."}
+    </p>
+  );
+}
 
 type Warehouse = {
   id: number;
@@ -322,6 +346,14 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
   const [caps, setCaps] = useState<CameraCapabilities>({});
   const [zoom, setZoom] = useState(1);
   const [focus, setFocus] = useState(0);
+  const framesRef = useRef(false);
+
+  const restartCamera = (nextDeviceId?: string) => {
+    setStarting(true); setError(""); setCaps({}); setTrack(null);
+    framesRef.current = false;
+    if (nextDeviceId === undefined) setCameraAttempt(n => n + 1);
+    else setDeviceId(nextDeviceId);
+  };
 
   const closeScanner = useCallback(() => {
     if (closedRef.current) return;
@@ -347,7 +379,6 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    setStarting(true); setError(""); setCaps({}); setTrack(null);
     const stopCamera = startLogisticsCamera(video, deviceId, {
       code: code => { onCodeRef.current(code); closeScanner(); },
       ready: (nextTrack, nextCameras) => {
@@ -358,9 +389,11 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
         setStarting(false);
       },
       error: cameraError => { setStarting(false); setError(cameraErrorMessage(cameraError)); },
+      attempt: () => { framesRef.current = true; },
     });
     stopCameraRef.current = stopCamera;
     return () => {
+      framesRef.current = false;
       stopCamera();
       if (stopCameraRef.current === stopCamera) {
         stopCameraRef.current = () => undefined;
@@ -381,20 +414,19 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
     stopCameraRef.current();
     setTrack(null); setCaps({});
     const requestId = ++decodeRequestRef.current;
-    const url = URL.createObjectURL(file);
     try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser");
+      const text = await decodeBarcodeSource(file);
       if (!mountedRef.current || requestId !== decodeRequestRef.current) return;
-      const result = await new BrowserMultiFormatReader().decodeFromImageUrl(url);
-      if (!mountedRef.current || requestId !== decodeRequestRef.current) return;
-      onCodeRef.current(result.getText());
+      if (!text) {
+        setError("Код на фото не распознан. Снимите код ближе, без блика, или введите номер накладной");
+        return;
+      }
+      onCodeRef.current(text);
       closeScanner();
     } catch (decodeError) {
       if (mountedRef.current && requestId === decodeRequestRef.current) {
         setError(`Код на фото не распознан: ${apiError(decodeError)}`);
       }
-    } finally {
-      URL.revokeObjectURL(url);
     }
   };
 
@@ -409,7 +441,7 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
         </div>
         <video ref={videoRef} className="logistics-camera__video" muted playsInline />
         <p>Через упаковку: расправьте плёнку над кодом и слегка наклоните пакет от блика.</p>
-        {cameras.length > 1 && <label>Камера<select value={deviceId || track?.getSettings?.().deviceId || ""} onChange={e => setDeviceId(e.target.value)}>
+        {cameras.length > 1 && <label>Камера<select value={deviceId || track?.getSettings?.().deviceId || ""} onChange={e => restartCamera(e.target.value)}>
           {cameras.map((camera, i) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label || `Камера ${i + 1}`}</option>)}
         </select></label>}
         {caps.zoom && <label>Увеличение<input type="range" min={caps.zoom.min} max={caps.zoom.max} step={caps.zoom.step || 0.1} value={zoom}
@@ -419,8 +451,11 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
         {caps.focusMode?.includes("continuous") && <button type="button" className="btn btn--ghost" onClick={() => void track?.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => setError("Автофокус недоступен"))}>Автофокус</button>}
         {starting && <p className="logistics__message">Запускаем камеру…</p>}
         {error && <p className="logistics__message logistics__message--error">{error}</p>}
+        {!starting && !error && track && (
+          <SlowScanHint key={`${deviceId}:${cameraAttempt}`} hasFrames={() => framesRef.current} />
+        )}
         {!track && !starting && <button type="button" className="btn btn--ghost" onClick={() => {
-          decodeRequestRef.current += 1; setCameraAttempt(n => n + 1);
+          decodeRequestRef.current += 1; restartCamera();
         }}>Вернуться к камере</button>}
         <div className="logistics-camera__actions">
           <label className="btn btn--ghost logistics-camera__file">
@@ -1009,6 +1044,7 @@ export function LogisticsWorkspace() {
                 {capabilities.has("pending_documents") && warehouseId && <LogisticsPendingPanel
                   key={`${operation}:${warehouseId}:${draft.id}`} operation={operation}
                   warehouseId={warehouseId} draftId={draft.id} revision={draft} updating={operationBusy}
+                  onAdd={code => scan(code)}
                 />}
                 <button className="btn logistics-primary" type="button" disabled={!draft.item_count || operationBusy} onClick={confirm}>
                   Подтвердить {draft.item_count ? `(${draft.item_count})` : ""}

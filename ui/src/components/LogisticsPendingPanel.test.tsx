@@ -38,3 +38,18 @@ it("не подменяет свежий остаток запоздавшим �
   resolveFirst(page);
   await waitFor(() => expect(screen.queryByText(/Всего по фильтру: 21 ·/)).not.toBeInTheDocument());
 });
+
+it("даёт добавить документ из списка, когда камера не читает код", async () => {
+  const waiting: Pending = { ...page, items: [
+    { transfer_id: 1, document_number: "РТУ-1", dropoff_warehouse_name: "Магазин", in_draft: true, lookup_code: "MMLOG1|rtu|0x01" },
+    { transfer_id: 2, document_number: "РТУ-2", dropoff_warehouse_name: "Магазин", in_draft: false, lookup_code: "MMLOG1|rtu|0x02" },
+  ] };
+  const onAdd = vi.fn();
+  render(<LogisticsPendingPanel operation="handoff" warehouseId={1} draftId={2} revision={1}
+    load={vi.fn().mockResolvedValue(waiting)} onAdd={onAdd} />);
+  const add = await screen.findAllByRole("button", { name: "Добавить без сканирования" });
+  // Only the document that is still missing from the draft can be added.
+  expect(add).toHaveLength(1);
+  fireEvent.click(add[0]);
+  expect(onAdd).toHaveBeenCalledWith("MMLOG1|rtu|0x02");
+});

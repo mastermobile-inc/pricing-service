@@ -123,13 +123,13 @@ def _jsonable_payload(value: Any) -> Any:
 def _get_actor(session: Session, actor_user_id: int) -> LogisticsUser:
     user = session.get(LogisticsUser, actor_user_id)
     if user is None or not user.is_active:
-        raise _http_error(404, "logistics user not found")
+        raise _http_error(404, "Сотрудник не найден в логистике. Обратитесь к администратору")
     return user
 
 
 def _require_role(user: LogisticsUser, allowed_roles: set[str]) -> None:
     if user.role not in allowed_roles:
-        raise _http_error(403, "user role is not allowed for this operation")
+        raise _http_error(403, "У вашей учётной записи нет прав на эту операцию")
 
 
 def _get_warehouse(session: Session, warehouse_id: int) -> LogisticsWarehouse:
@@ -152,7 +152,7 @@ def require_warehouse_in_scope(
         if str(external_id).strip()
     }
     if allowed_external_ids is not None and warehouse.external_id.strip().lower() not in allowed:
-        raise _http_error(403, "warehouse is outside logistics pilot")
+        raise _http_error(403, "Склад не подключён к логистическому пилоту")
     return warehouse.id
 
 
@@ -192,7 +192,7 @@ def require_transfer_in_warehouse_scope(
         warehouse is not None and warehouse.external_id.strip().lower() in allowed
         for warehouse in warehouses
     ):
-        raise _http_error(403, "transfer is outside logistics pilot")
+        raise _http_error(403, "Документ относится к складу вне логистического пилота")
 
 
 def warehouse_ids_in_scope(
@@ -235,7 +235,7 @@ def _normalize_source_document_type(value: str | None) -> str:
 def _lookup_code_for(item: dict) -> str:
     lookup_code = item.get("lookup_code") or item.get("barcode")
     if not lookup_code:
-        raise _http_error(422, "lookup_code or barcode is required")
+        raise _http_error(422, "Введите код или номер документа")
     return lookup_code
 
 
@@ -485,10 +485,18 @@ def _record_unknown_qr(session: Session, *, code: str) -> None:
     session.commit()
 
 
+def _document_number_condition(code: str):
+    """Let a worker type the printed document number when the camera cannot read it."""
+
+    compact = re.sub(r"\s+", "", code)
+    variants = {compact, compact.upper(), compact.lower()}
+    return func.replace(LogisticsTransfer.document_number, " ", "").in_(sorted(variants))
+
+
 def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
     code = code.strip()
     if not code:
-        raise _http_error(422, "lookup code is empty")
+        raise _http_error(422, "Введите код или номер документа")
     rows = _lookup_rows(
         session,
         (LogisticsTransfer.lookup_code == code) | (LogisticsTransfer.barcode == code),
@@ -525,6 +533,8 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
                         409,
                         "Документ относится к внешней службе доставки и пока не входит во внутренний пилот",
                     )
+        else:
+            rows = _lookup_rows(session, _document_number_condition(code))
     if len(rows) > 1:
         _create_manual_review(
             session,
@@ -534,7 +544,10 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
             payload={"lookup_code": code, "transfer_ids": [row.id for row in rows]},
             commit=True,
         )
-        raise _http_error(409, "lookup code is ambiguous")
+        raise _http_error(
+            409,
+            "Этот код или номер найден сразу у нескольких документов. Сообщите администратору",
+        )
     if not rows:
         _record_unknown_qr(session, code=code)
         from app.services.logistics_pending import document_freshness
@@ -550,7 +563,7 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
                     else "QR распознан, но документ ещё не загружен. Повторите через минуту"
                 )
                 if parsed is not None
-                else "Код не распознан. Отсканируйте QR или штрихкод документа"
+                else "Документ не найден. Отсканируйте QR документа или введите номер накладной полностью"
             ),
         )
     transfer = rows[0]
@@ -821,6 +834,27 @@ def _get_transfer_by_barcode_old(session: Session, barcode: str) -> LogisticsTra
     return transfer
 
 
+def _was_accepted_at_warehouse(
+    session: Session, transfer: LogisticsTransfer, warehouse_id: int
+) -> bool:
+    """Tell a real earlier acceptance from a document that never left its source."""
+
+    return (
+        session.scalar(
+            select(LogisticsTransferEvent.id)
+            .where(
+                LogisticsTransferEvent.transfer_id == transfer.id,
+                LogisticsTransferEvent.warehouse_id == warehouse_id,
+                LogisticsTransferEvent.event_type.in_(
+                    (EVENT_ACCEPTED_AT_POINT, EVENT_ACCEPTED_FROM_EXTERNAL_CARRIER)
+                ),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def _seed_state(session: Session, transfer: LogisticsTransfer) -> LogisticsTransferState:
     state = transfer.state
     if state is None:
@@ -1000,7 +1034,7 @@ def create_draft(
     if draft_type == DRAFT_TYPE_HANDOFF:
         _require_role(actor, DRAFT_SENDER_ROLES)
         if driver_id is None:
-            raise _http_error(422, "driver_id is required for handoff draft")
+            raise _http_error(422, "Выберите водителя")
     elif draft_type == DRAFT_TYPE_RECEIPT:
         _require_role(actor, DRAFT_RECEIVER_ROLES)
     else:
@@ -1011,18 +1045,18 @@ def create_draft(
     route_run = _get_route_run(session, route_run_id)
     if route_run is not None and route_run.driver_id is not None and driver_id is not None:
         if route_run.driver_id != driver_id:
-            raise _http_error(409, "route run driver does not match draft driver")
+            raise _http_error(409, "Водитель не совпадает с водителем закреплённого рейса")
     if default_dropoff_warehouse_id is not None:
         _get_warehouse(session, default_dropoff_warehouse_id)
 
     if actor.role in {"sender", "receiver"} and actor.default_warehouse_id is None:
-        raise _http_error(422, "default logistics warehouse is not configured")
+        raise _http_error(422, "Для вашей учётной записи не настроен склад по умолчанию")
     if (
         actor.default_warehouse_id is not None
         and actor.role != "admin"
         and warehouse_id != actor.default_warehouse_id
     ):
-        raise _http_error(403, "user cannot operate outside the assigned warehouse")
+        raise _http_error(403, "Вы можете работать только на своём складе")
 
     draft = LogisticsDraft(
         draft_type=draft_type,
@@ -1056,7 +1090,7 @@ def _get_draft(session: Session, draft_id: int) -> LogisticsDraft:
         )
     )
     if draft is None:
-        raise _http_error(404, "draft not found")
+        raise _http_error(404, "Черновик не найден. Создайте новый")
     return draft
 
 
@@ -1065,7 +1099,7 @@ def _get_draft_for_update(session: Session, draft_id: int) -> LogisticsDraft:
         select(LogisticsDraft.id).where(LogisticsDraft.id == draft_id).with_for_update()
     )
     if locked_id is None:
-        raise _http_error(404, "draft not found")
+        raise _http_error(404, "Черновик не найден. Создайте новый")
     # Endpoint-level contract checks may have loaded this row before the lock.
     # Refresh after waiting so a concurrent confirmation is observed as closed.
     session.expire_all()
@@ -1086,7 +1120,9 @@ def _lock_draft_transfers_for_update(
         .with_for_update()
     ).all()
     if len(locked_ids) != len(transfer_ids):
-        raise _http_error(409, "draft contains unavailable transfer")
+        raise _http_error(
+            409, "В черновике есть документ, который стал недоступен. Обновите черновик"
+        )
     # A different draft may have changed the state while this request waited.
     session.expire_all()
     return _get_draft(session, draft.id)
@@ -1094,7 +1130,7 @@ def _lock_draft_transfers_for_update(
 
 def _require_draft_mutation_access(actor: LogisticsUser, draft: LogisticsDraft) -> None:
     if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
-        raise _http_error(403, "user cannot modify this draft")
+        raise _http_error(403, "Этот черновик создан другим сотрудником")
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
         _require_role(actor, DRAFT_SENDER_ROLES)
     elif draft.draft_type == DRAFT_TYPE_RECEIPT:
@@ -1103,9 +1139,9 @@ def _require_draft_mutation_access(actor: LogisticsUser, draft: LogisticsDraft) 
         raise _http_error(422, "unsupported draft type")
     if actor.role in {"sender", "receiver"}:
         if actor.default_warehouse_id is None:
-            raise _http_error(422, "default logistics warehouse is not configured")
+            raise _http_error(422, "Для вашей учётной записи не настроен склад по умолчанию")
         if actor.default_warehouse_id != draft.warehouse_id:
-            raise _http_error(403, "draft warehouse is outside current user assignment")
+            raise _http_error(403, "Черновик относится к другому складу")
 
 
 def get_open_draft_for_actor(session: Session, *, actor_user_id: int) -> dict | None:
@@ -1132,13 +1168,13 @@ def add_scan_to_draft(
 ) -> dict:
     draft = _get_draft_for_update(session, draft_id)
     if draft.status != "open":
-        raise _http_error(409, "draft is already closed")
+        raise _http_error(409, "Черновик уже закрыт. Создайте новый")
     actor = _get_actor(session, actor_user_id)
     _require_draft_mutation_access(actor, draft)
 
     scan_code = lookup_code or barcode
     if not scan_code:
-        raise _http_error(422, "lookup_code or barcode is required")
+        raise _http_error(422, "Введите код или номер документа")
     transfer = _get_unit_by_lookup(session, scan_code)
     state = _seed_state(session, transfer)
 
@@ -1179,11 +1215,23 @@ def add_scan_to_draft(
                 state.status == STATUS_AT_WAREHOUSE
                 and state.current_warehouse_id == draft.warehouse_id
             ):
-                raise _http_error(409, "Документ уже принят в этом магазине")
+                if _was_accepted_at_warehouse(session, transfer, draft.warehouse_id):
+                    raise _http_error(409, "Документ уже принят в этом магазине")
+                warehouse = state.current_warehouse or transfer.source_warehouse
+                raise _http_error(
+                    409,
+                    f"Документ ещё не отправлен со склада {warehouse.name}. "
+                    "Здесь его нужно передать водителю: выберите «Передать водителю»",
+                )
             if state.status == STATUS_AT_WAREHOUSE:
                 raise _http_error(
                     409,
                     "Сначала выполните передачу водителю на складе отправления",
+                )
+            if state.status == STATUS_WITH_EXTERNAL_CARRIER:
+                raise _http_error(
+                    409,
+                    "Документ передан внешней службе доставки. Приёмку подтверждает перевозчик",
                 )
             raise _http_error(409, "Документ недоступен для приёмки")
         if state.dropoff_warehouse_id != draft.warehouse_id:
@@ -1217,7 +1265,7 @@ def remove_scan_from_draft(
 ) -> dict:
     draft = _get_draft_for_update(session, draft_id)
     if draft.status != "open":
-        raise _http_error(409, "draft is already closed")
+        raise _http_error(409, "Черновик уже закрыт. Создайте новый")
     actor = _get_actor(session, actor_user_id)
     _require_draft_mutation_access(actor, draft)
     item = session.scalar(
@@ -1281,7 +1329,7 @@ def cancel_draft(
     if draft.status == "cancelled":
         return _serialize_draft(draft)
     if draft.status != "open":
-        raise _http_error(409, "draft is already closed")
+        raise _http_error(409, "Черновик уже закрыт. Создайте новый")
     draft.status = "cancelled"
     draft.cancelled_at = utcnow()
     draft.cancelled_by_user_id = actor.id
@@ -1327,9 +1375,9 @@ def confirm_draft(
             ),
         }
     if draft.status != "open":
-        raise _http_error(409, "draft is already closed")
+        raise _http_error(409, "Черновик уже закрыт. Создайте новый")
     if not draft.items:
-        raise _http_error(422, "draft is empty")
+        raise _http_error(422, "В черновике нет документов. Отсканируйте хотя бы один")
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
         session.scalar(
             select(LogisticsDriver).where(LogisticsDriver.id == draft.driver_id).with_for_update()
@@ -1361,7 +1409,7 @@ def confirm_draft(
                 state.status != STATUS_AT_WAREHOUSE
                 or state.current_warehouse_id != draft.warehouse_id
             ):
-                raise _http_error(409, "transfer is not available for handoff")
+                raise _http_error(409, "Документ стал недоступен для передачи. Обновите черновик")
             event = LogisticsTransferEvent(
                 transfer_id=transfer.id,
                 event_type=EVENT_HANDED_TO_DRIVER,

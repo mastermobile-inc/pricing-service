@@ -6,10 +6,8 @@ import { api } from "../api/client";
 import { CameraScanner, LogisticsWorkspace } from "./LogisticsWorkspace";
 
 const zxing = vi.hoisted(() => ({
-  decodeFromConstraints: vi.fn(),
-  decodeFromImageUrl: vi.fn(),
+  readBarcodes: vi.fn(),
   stop: vi.fn(),
-  decodeFromCanvas: vi.fn(),
   getUserMedia: vi.fn(),
 }));
 
@@ -17,12 +15,13 @@ vi.mock("../api/client", () => ({
   api: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
 }));
 
-vi.mock("@zxing/browser", () => ({
-  BrowserMultiFormatReader: class {
-    decodeFromConstraints = zxing.decodeFromConstraints;
-    decodeFromImageUrl = zxing.decodeFromImageUrl;
-    decodeFromCanvas = zxing.decodeFromCanvas;
-  },
+vi.mock("zxing-wasm/reader", () => ({
+  readBarcodes: zxing.readBarcodes,
+  prepareZXingModule: vi.fn(),
+}));
+
+vi.mock("zxing-wasm/reader/zxing_reader.wasm?url", () => ({
+  default: "/assets/zxing_reader.wasm",
 }));
 
 const bootstrap = {
@@ -296,6 +295,30 @@ describe("LogisticsWorkspace", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("объясняет молчащий сканер вместо тишины на экране", async () => {
+    zxing.readBarcodes.mockResolvedValue([]);
+    const view = render(<CameraScanner onCode={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText("Запускаем камеру…")).not.toBeInTheDocument());
+    expect(screen.queryByText(/Камера не передаёт кадры/)).not.toBeInTheDocument();
+    // jsdom never paints a frame: the hint must name that case, not blame the code.
+    await waitFor(() => expect(screen.getByText(/Камера не передаёт кадры/)).toBeVisible(), {
+      timeout: 9000,
+    });
+    view.unmount();
+
+    vi.spyOn(HTMLVideoElement.prototype, "videoWidth", "get").mockReturnValue(1920);
+    vi.spyOn(HTMLVideoElement.prototype, "videoHeight", "get").mockReturnValue(1080);
+    vi.spyOn(HTMLMediaElement.prototype, "readyState", "get").mockReturnValue(4);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 })),
+    } as unknown as CanvasRenderingContext2D);
+    render(<CameraScanner onCode={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/Код пока не читается/)).toBeVisible(), {
+      timeout: 9000,
+    });
+  }, 25000);
+
   it("закрывает камеру по Escape", () => {
     const onClose = vi.fn();
     render(<CameraScanner onCode={vi.fn()} onClose={onClose} />);
@@ -344,56 +367,29 @@ describe("LogisticsWorkspace", () => {
   });
 
   it("игнорирует позднее распознавание фото после закрытия сканера", async () => {
-    let resolveDecode!: (result: { getText: () => string }) => void;
-    zxing.decodeFromImageUrl.mockReturnValueOnce(
+    let resolveDecode!: (result: Array<{ text: string; isValid: boolean }>) => void;
+    zxing.readBarcodes.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveDecode = resolve;
       })
     );
-    const createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
-    const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
-    const revokeObjectURL = vi.fn();
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: vi.fn(() => "blob:test-photo"),
-    });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      value: revokeObjectURL,
-    });
     const onCode = vi.fn();
     const onClose = vi.fn();
 
-    try {
-      const view = render(<CameraScanner onCode={onCode} onClose={onClose} />);
-      await waitFor(() => expect(screen.queryByText("Запускаем камеру…")).not.toBeInTheDocument());
-      const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
-      expect(fileInput).not.toBeNull();
-      fireEvent.change(fileInput!, {
-        target: { files: [new File(["barcode"], "barcode.png", { type: "image/png" })] },
-      });
-      await waitFor(() =>
-        expect(zxing.decodeFromImageUrl).toHaveBeenCalledWith("blob:test-photo")
-      );
+    const view = render(<CameraScanner onCode={onCode} onClose={onClose} />);
+    await waitFor(() => expect(screen.queryByText("Запускаем камеру…")).not.toBeInTheDocument());
+    const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    const photo = new File(["barcode"], "barcode.png", { type: "image/png" });
+    fireEvent.change(fileInput!, { target: { files: [photo] } });
+    await waitFor(() => expect(zxing.readBarcodes).toHaveBeenCalledWith(photo, expect.anything()));
 
-      view.unmount();
-      resolveDecode({ getText: () => "LATE-CODE" });
+    view.unmount();
+    resolveDecode([{ text: "LATE-CODE", isValid: true }]);
+    await Promise.resolve();
 
-      await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:test-photo"));
-      expect(onCode).not.toHaveBeenCalled();
-      expect(onClose).not.toHaveBeenCalled();
-    } finally {
-      if (createObjectUrlDescriptor) {
-        Object.defineProperty(URL, "createObjectURL", createObjectUrlDescriptor);
-      } else {
-        delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
-      }
-      if (revokeObjectUrlDescriptor) {
-        Object.defineProperty(URL, "revokeObjectURL", revokeObjectUrlDescriptor);
-      } else {
-        delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
-      }
-    }
+    expect(onCode).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

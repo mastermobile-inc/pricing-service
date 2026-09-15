@@ -333,7 +333,7 @@ def test_unknown_scan_messages_are_distinct_and_preserve_draft(db):
     d = draft(db)
     scan(db, d["id"])
     for code, message in [
-        ("bad-code", "Код не распознан"),
+        ("bad-code", "Документ не найден"),
         ("MMLOG1|rtu|99", "QR распознан, но документ ещё не загружен"),
     ]:
         with pytest.raises(HTTPException, match=message):
@@ -371,3 +371,37 @@ def test_bff_pending_driver_patch_and_draft_ownership(db):
             assert client.patch(url, json={"driver_id": 1}).status_code == 403
     finally:
         app.dependency_overrides.clear()
+
+
+def test_receipt_at_source_tells_handoff_first_and_keeps_accepted_message(db):
+    seed(db)
+    db.add(LogisticsUser(id=4, full_name="Администратор", role="admin"))
+    db.commit()
+    # The document still waits at its source warehouse: it was never handed over.
+    at_source = draft(db, "receipt", 4, 1)
+    with pytest.raises(HTTPException, match="ещё не отправлен со склада Склад 1"):
+        scan(db, at_source["id"], user=4)
+    db.rollback()
+    logistics.cancel_draft(db, draft_id=at_source["id"], actor_user_id=4)
+    # A real handoff and receipt keep the honest "already accepted" wording.
+    handoff = draft(db)
+    scan(db, handoff["id"])
+    confirm(db, handoff["id"])
+    receipt = draft(db, "receipt", 2, 2)
+    scan(db, receipt["id"], user=2)
+    confirm(db, receipt["id"], 2)
+    again = draft(db, "receipt", 2, 2)
+    with pytest.raises(HTTPException, match="уже принят в этом магазине"):
+        scan(db, again["id"], user=2)
+    db.rollback()
+
+
+def test_scan_accepts_typed_document_number(db):
+    seed(db)
+    handoff = draft(db)
+    typed = scan(db, handoff["id"], code="  рту-1  ")
+    assert typed["item_count"] == 1
+    # The same document is not added twice when the QR is scanned afterwards.
+    assert scan(db, handoff["id"])["scan_result"] == "already_scanned"
+    with pytest.raises(HTTPException, match="Документ не найден"):
+        scan(db, handoff["id"], code="РТУ-404")

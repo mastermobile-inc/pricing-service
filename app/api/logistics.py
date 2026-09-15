@@ -78,7 +78,7 @@ def site_order_state_batch(
 def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
     actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
     if actual_type is None:
-        raise HTTPException(status_code=404, detail="draft not found")
+        raise HTTPException(status_code=404, detail="Черновик не найден. Создайте новый")
     if actual_type != expected_type:
         raise HTTPException(status_code=409, detail="draft type does not match endpoint")
 

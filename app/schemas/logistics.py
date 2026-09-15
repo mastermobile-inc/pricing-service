@@ -303,6 +303,7 @@ class LogisticsPendingItem(BaseModel):
     transfer_id: int
     document_number: str
     source_document_type: str
+    lookup_code: str | None = None
     site_order_number: str | None = None
     dropoff_warehouse_name: str
     driver_id: int | None = None

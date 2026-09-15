@@ -522,7 +522,7 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             json={"warehouse_id": foreign_id, "driver_id": driver_id},
         )
         assert outside_pilot.status_code == 403
-        assert outside_pilot.json()["detail"] == "warehouse is outside logistics pilot"
+        assert outside_pilot.json()["detail"] == "Склад не подключён к логистическому пилоту"
 
         handoff = client.post(
             "/api/bitrix/logistics/handoffs/draft",
@@ -586,7 +586,7 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             json={"warehouse_id": foreign_id, "driver_id": driver_id},
         )
         assert outside_fallback.status_code == 403
-        assert outside_fallback.json()["detail"] == "warehouse is outside logistics pilot"
+        assert outside_fallback.json()["detail"] == "Склад не подключён к логистическому пилоту"
         web_handoff = client.post(
             "/api/logistics/web/handoffs/draft",
             json={

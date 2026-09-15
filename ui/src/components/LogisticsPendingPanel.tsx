@@ -6,16 +6,18 @@ export type Pending = {
   total: number; scanned_count: number; remaining_count: number;
   freshness: Record<string, { stale: boolean }>;
   drivers: Array<{ id: number; full_name: string }>;
-  items: Array<{ transfer_id: number; document_number: string; dropoff_warehouse_name: string; in_draft: boolean; status_label?: string | null }>;
+  items: Array<{ transfer_id: number; document_number: string; dropoff_warehouse_name: string; in_draft: boolean; status_label?: string | null; lookup_code?: string | null }>;
 };
 
 export type PendingLoader = (params: Record<string, string | number | undefined>, signal: AbortSignal) => Promise<Pending>;
 const loadBitrix: PendingLoader = async (params, signal) => (await api.get<Pending>("/bitrix/logistics/pending-documents", { params, signal })).data;
 
-export function LogisticsPendingPanel({ operation, warehouseId, draftId, revision, updating = false, load = loadBitrix }: {
+export function LogisticsPendingPanel({ operation, warehouseId, draftId, revision, updating = false, load = loadBitrix, onAdd }: {
   operation: "handoff" | "receipt"; warehouseId: number; draftId?: number; revision: unknown;
   load?: PendingLoader;
   updating?: boolean;
+  /** Adds a listed document to the open draft when the camera cannot read its code. */
+  onAdd?: (lookupCode: string) => void;
 }) {
   const [offset, setOffset] = useState(0);
   const [driverId, setDriverId] = useState("");
@@ -67,6 +69,8 @@ export function LogisticsPendingPanel({ operation, warehouseId, draftId, revisio
       <ul>{page.items.map(row => <li key={row.transfer_id}>
         {row.document_number} → {row.dropoff_warehouse_name} — {row.in_draft ? "В черновике" : "Ожидает сканирования"}
         {row.status_label && <small>{row.status_label}</small>}
+        {onAdd && draftId && !row.in_draft && row.lookup_code && <button className="btn btn--ghost" type="button" disabled={updating}
+          onClick={() => onAdd(row.lookup_code as string)}>Добавить без сканирования</button>}
       </li>)}</ul>
       <button className="btn btn--ghost" type="button" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 20))}>Предыдущие</button>
       <button className="btn btn--ghost" type="button" disabled={offset + 20 >= page.total} onClick={() => setOffset(offset + 20)}>Следующие</button>
