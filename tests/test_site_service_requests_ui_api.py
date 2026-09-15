@@ -23,6 +23,7 @@ def _ui_dependencies(
     attachments_enabled: bool = True,
     user_id: int = 131016,
     write_allowed_user_ids: list[int] | None = None,
+    stage_map: dict[str, str] | None = None,
 ):
     settings = Settings(
         site_service_requests_ui_enabled=True,
@@ -35,6 +36,7 @@ def _ui_dependencies(
         site_service_requests_event_encryption_key=base64.urlsafe_b64encode(b"u" * 32).decode(
             "ascii"
         ),
+        site_service_requests_bitrix_stage_map=stage_map or {},
     )
 
     def override_db():
@@ -473,3 +475,103 @@ def test_order_status_is_refused_for_another_card(client, db_session):
         response = client.get("/api/site-service-requests/ui/items/999/order-status")
 
     assert response.status_code == 403
+
+
+def _goods_stage_settings_override(monkeypatch, *, moved: list):
+    """Подменяет перевод стадии, чтобы не ходить в Битрикс из теста."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    def _move(*, settings, item_id, stage_id):
+        moved.append((item_id, stage_id))
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "move_service_request_stage",
+        _move,
+    )
+
+
+def test_registering_a_return_moves_the_card_to_waiting_for_goods(client, db_session, monkeypatch):
+    """Возврат заведён — карточка уходит ждать посылку, а не ответ клиента."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+    moved: list = []
+    _goods_stage_settings_override(monkeypatch, moved=moved)
+    stage_map = {
+        "new": "DT1134_55:NEW",
+        "work": "DT1134_55:PREPARATION",
+        "client": "DT1134_55:CLIENT",
+        "goods": "DT1134_55:CLIENT_2",
+    }
+
+    with _ui_dependencies(db_session, stage_map=stage_map):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-1"},
+        )
+
+    assert created.status_code == 201
+    assert moved == [(391, "DT1134_55:CLIENT_2")]
+
+
+def test_return_registration_survives_a_failed_stage_move(client, db_session, monkeypatch):
+    """Битрикс не ответил — возврат всё равно зарегистрирован, без ложной ошибки."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("bitrix is down")
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "move_service_request_stage",
+        _boom,
+    )
+    stage_map = {"work": "DT1134_55:PREPARATION", "goods": "DT1134_55:CLIENT_2"}
+
+    with _ui_dependencies(db_session, stage_map=stage_map):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-2"},
+        )
+
+    assert created.status_code == 201
+    assert created.json()["returns"][0]["tracking_number"] == "CDEK-GOODS-2"
+
+
+def test_return_registration_does_not_move_the_stage_until_it_exists(
+    client, db_session, monkeypatch
+):
+    """Стадии «Ожидаем товар» в портале ещё нет — карточку не трогаем."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+    moved: list = []
+    _goods_stage_settings_override(monkeypatch, moved=moved)
+
+    with _ui_dependencies(db_session):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-3"},
+        )
+
+    assert created.status_code == 201
+    assert moved == []

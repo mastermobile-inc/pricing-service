@@ -503,6 +503,38 @@ def item_returns(
     )
 
 
+def _move_card_to_waiting_for_goods(
+    *,
+    settings: Settings,
+    item_id: int,
+    stage_id: str | None,
+) -> None:
+    """Переводит карточку в «Ожидаем товар» сразу после регистрации возврата.
+
+    Намеренно best effort: запись возврата уже закоммичена, и это главное. Если
+    поднять 500 из-за недоступного Битрикса, человек решит, что возврат не
+    создался, и заведёт его второй раз. Окончательная сверка — за лентой
+    `reconcile_site_service_request_return_stages`.
+
+    Пока стадия «Ожидаем товар» не создана в портале и не прописана в
+    stage_map, функция ничего не делает.
+    """
+
+    stage_map = settings.site_service_requests_bitrix_stage_map or {}
+    goods_stage_id = str(stage_map.get("goods") or "").strip()
+    movable = {str(stage_map.get(key) or "").strip() for key in ("new", "work", "client")} - {""}
+    if not goods_stage_id or str(stage_id or "").strip() not in movable:
+        return
+    try:
+        customer_return_request_service.move_service_request_stage(
+            settings=settings,
+            item_id=item_id,
+            stage_id=goods_stage_id,
+        )
+    except Exception:  # noqa: BLE001 — подсказка стадии не должна ронять регистрацию
+        return
+
+
 @router.get(
     "/items/{item_id}/order-status",
     response_model=SiteServiceRequestOrderStatusResponse,
@@ -614,6 +646,7 @@ def register_item_return(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not created:
         response.status_code = 200
+    _move_card_to_waiting_for_goods(settings=settings, item_id=item_id, stage_id=link.stage_id)
     shipments = customer_return_service.list_service_request_returns(db, item_id=item_id)
     customer_return_service.attach_expertise_cases(db, shipments)
     return SiteServiceRequestReturnsResponse.model_validate(

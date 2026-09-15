@@ -3653,6 +3653,155 @@ def auto_close_silent_site_service_requests(
     return results
 
 
+# Возврат меняет стадию медленно, поэтому лента смотрит на свежие записи: открытые
+# и закрывшиеся за последнюю неделю. Так карточка с давно завершённым возвратом не
+# дёргает Битрикс вечно.
+_SITE_SERVICE_RETURN_STAGE_LOOKBACK = timedelta(days=7)
+
+
+def reconcile_site_service_request_return_stages(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Держит карточку в «Ожидаем товар», пока посылка едет, и выводит, когда пришла.
+
+    «Ожидаем клиента» и «ждём посылку» — разные ожидания, и смешивать их нельзя:
+    из первого автозакрытие по молчанию клиента карточку закроет, из второго —
+    нет, потому что клиент там ни при чём.
+
+    Выход из стадии делает только лента: `picked_up` приходит и из логистики
+    (`confirm_pickup`), и событием перевозчика — в API это не поймать.
+
+    Пока ключ `goods` не настроен в SITE_SERVICE_REQUESTS_BITRIX_STAGE_MAP, лента
+    ничего не делает: стадию сначала создают в портале.
+    """
+
+    if not settings.site_service_requests_bitrix_writes_enabled:
+        return []
+    stage_map = settings.site_service_requests_bitrix_stage_map or {}
+    goods_stage_id = str(stage_map.get("goods") or "").strip()
+    work_stage_id = str(stage_map.get("work") or "").strip()
+    client_stage_id = str(stage_map.get("client") or "").strip()
+    if not goods_stage_id or not work_stage_id:
+        return []
+    entity_type_id = settings.site_service_requests_bitrix_entity_type_id
+    current_time = _as_utc(now or datetime.now(UTC))
+    batch_limit = _site_service_request_worker_limit(settings, limit=limit)
+
+    shipments = session.execute(
+        select(
+            CustomerReturnShipment.service_request_item_id,
+            CustomerReturnShipment.bitrix_case_id,
+            CustomerReturnShipment.status,
+        ).where(
+            or_(
+                CustomerReturnShipment.service_request_item_id.is_not(None),
+                CustomerReturnShipment.bitrix_case_id.is_not(None),
+            ),
+            or_(
+                CustomerReturnShipment.status.not_in(_SITE_SERVICE_CLOSED_RETURN_STATUSES),
+                CustomerReturnShipment.status_changed_at
+                >= current_time - _SITE_SERVICE_RETURN_STAGE_LOOKBACK,
+            ),
+        )
+    ).all()
+
+    open_items: set[int] = set()
+    known_items: set[int] = set()
+    for service_request_item_id, bitrix_case_id, status in shipments:
+        item_ids: set[int] = set()
+        if service_request_item_id is not None:
+            item_ids.add(int(service_request_item_id))
+        if bitrix_case_id and str(bitrix_case_id).isdigit():
+            item_ids.add(int(bitrix_case_id))
+        known_items |= item_ids
+        if status not in _SITE_SERVICE_CLOSED_RETURN_STATUSES:
+            open_items |= item_ids
+    if not known_items:
+        return []
+
+    cases = session.scalars(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.bitrix_item_id.in_(sorted(known_items)),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+        )
+        .order_by(SiteServiceRequestCase.id)
+        .limit(batch_limit)
+    ).all()
+
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        item_id = int(case.bitrix_item_id)
+        waiting_for_goods = item_id in open_items
+        try:
+            item = writer.get_item(entity_type_id=entity_type_id, item_id=item_id)
+            current_stage = _item_field_value(item, "stageId", default=_MISSING_ITEM_FIELD)
+            if (
+                not isinstance(current_stage, str)
+                or not current_stage
+                or current_stage.strip() != current_stage
+            ):
+                raise RuntimeError("bitrix_stage_readback_failed")
+            if waiting_for_goods:
+                movable = {work_stage_id, client_stage_id} - {""}
+                if current_stage not in movable:
+                    continue
+                target_stage_id = goods_stage_id
+                comment = None
+            else:
+                if current_stage != goods_stage_id:
+                    continue
+                # Товар у нас — очередь наша: осмотреть и решить.
+                target_stage_id = work_stage_id
+                comment = (
+                    "Возврат завершён, товар у нас — карточка вернулась в работу. "
+                    f"[site-service-goods-arrived:{case.id}]"
+                )
+            readback = writer.update_item_fields(
+                entity_type_id=entity_type_id,
+                item_id=item_id,
+                fields={"stageId": target_stage_id},
+            )
+            if (
+                _item_field_value(readback, "stageId", default=_MISSING_ITEM_FIELD)
+                != target_stage_id
+            ):
+                raise RuntimeError("bitrix_return_stage_readback_failed")
+        except RuntimeError as exc:
+            session.rollback()
+            results.append(
+                {
+                    "caseId": case.id,
+                    "ticketId": case.source_ticket_id,
+                    "stageId": None,
+                    "errorCode": str(exc),
+                }
+            )
+            continue
+        if comment is not None:
+            _add_site_service_request_comment_once(
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                marker=f"[site-service-goods-arrived:{case.id}]",
+                comment=comment,
+            )
+        results.append(
+            {
+                "caseId": case.id,
+                "ticketId": case.source_ticket_id,
+                "stageId": target_stage_id,
+            }
+        )
+    return results
+
+
 def reconcile_site_service_request_assignments(
     session: Session,
     *,
