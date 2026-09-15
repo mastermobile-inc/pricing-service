@@ -47,6 +47,7 @@ delivery_control:
     - docs/phases/customer-price-type-search-task-2169-deploy-20260912.yml
   evidence_records:
     - docs/evidence/customer-price-type-search-task-2169-20260912.yml
+    - docs/evidence/customer-price-type-search-task-2169-deploy-20260912.yml
   review_records: []
 ---
 
@@ -767,6 +768,9 @@ sync dedupe и 1С whitelist/dry-run/apply/readback проверяются в Ph
 
 # Changelog
 
+- 2026-09-12 — исправление поиска №2169 развернуто в production из merge-коммита
+  `909c50932ae989d82db6404654b706a7c5a0847d`; активный release, служба,
+  frontend-ассет и read-only данные `РБ002793` подтверждены после переключения.
 - 2026-09-12 — для дефекта поиска №2169 утверждена последовательность
   `исправление -> тесты -> production-readback -> публикация ответа`.
 - 2026-09-11 — единый поиск по портфелю выведен на главный экран витрины:

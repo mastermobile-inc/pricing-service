@@ -21,6 +21,7 @@ allowed_paths:
   - docs/phases/customer-price-type-search-task-2169-20260912.yml
   - docs/phases/customer-price-type-search-task-2169-deploy-20260912.yml
   - docs/evidence/customer-price-type-search-task-2169-20260912.yml
+  - docs/evidence/customer-price-type-search-task-2169-deploy-20260912.yml
   - docs/evidence/customer-price-type-search-task-2169-20260912-results.md
 approval:
   status: approved
@@ -29,7 +30,7 @@ approval:
   source: Явная команда пользователя «деплой исправления поиска» после завершения локальной фазы.
 verification:
   - id: release-deploy
-    command: /usr/local/sbin/mm-pricing-service-release deploy --source-root /tmp/pricing-cpt-search-2169-20260912 --release-name customer-price-search-2169-20260912
+    command: /usr/local/sbin/mm-pricing-service-release deploy --source-root /tmp/pricing-release-2169-MooMYC --release-name customer-price-search-2169-20260912
     expected_result: Контроллер строит immutable release, выполняет smoke и переключает production без ошибки.
   - id: release-status
     command: /usr/local/sbin/mm-pricing-service-release status
@@ -44,4 +45,4 @@ verification:
     command: /opt/MM/pricing-service-task43-current/.venv/bin/python -c "read-only query for РБ002793"
     expected_result: В production-БД клиент существует и имеет технический статус data_check без разрешения изменения типа цены.
 stop_condition: При ошибке deploy или smoke не публиковать ответ Арсену; проверить фактический active release и использовать штатный rollback, если переключение произошло частично.
-status: approved
+status: completed
