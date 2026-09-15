@@ -4303,6 +4303,18 @@
   margin: 0;
   color: #344054;
   font-size: 14px;
+  /* A scanned code has no spaces: without this it widens the card and pushes
+     the camera button off screen. */
+  overflow-wrap: anywhere;
+}
+
+.logistics-items p,
+.logistics-draft-mobile p {
+  overflow-wrap: anywhere;
+}
+
+.logistics-scan-row input {
+  min-width: 0;
 }
 
 .logistics__monitor {

@@ -515,7 +515,8 @@ export function LogisticsWorkspace() {
       setMessage(data.scan_result === "already_scanned" ? "Документ уже добавлен" : `Добавлено: ${data.item_count}`);
     },
     failure: (code, error) => {
-      setScanCode(current => current || code); setMessageError(true); setMessage(apiError(error));
+      // The code stays visible in "Не добавлены", so the field is left clear for the next scan.
+      setScanCode(""); setMessageError(true); setMessage(`${apiError(error)} (код: ${code})`);
     },
   });
   const operationBusy = busy || scanQueue.count > 0;
@@ -998,6 +999,8 @@ export function LogisticsWorkspace() {
                     onChange={(event) => setScanCode(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") { event.preventDefault(); scan(event.currentTarget.value); }
+                      // Shop scanners send an F7 prefix configured for 1C; it must not reach the browser.
+                      if (event.key === "F7") event.preventDefault();
                     }}
                     placeholder="QR, штрихкод или номер"
                   />

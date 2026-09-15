@@ -150,8 +150,10 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getAllByText("РТУ-90")).toHaveLength(1);
     fireEvent.change(input, { target: { value: "unknown-QR" } });
     fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
-    expect(await screen.findByText("QR распознан, документ ещё не загружен")).toBeVisible();
-    expect(input).toHaveValue("unknown-QR");
+    expect(await screen.findByText(/QR распознан, документ ещё не загружен/)).toBeVisible();
+    // The rejected code is named in the message; the field stays ready for the next scan.
+    expect(screen.getByText(/код: unknown-QR/)).toBeVisible();
+    await waitFor(() => expect(input).toHaveValue(""));
     expect(screen.getByText("РТУ-90")).toBeVisible();
     expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
   });
@@ -450,7 +452,10 @@ describe("LogisticsWorkspace", () => {
 
     fireEvent.change(input, { target: { value: "BAD-CODE" } });
     fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
-    expect(await screen.findByText("Код уже добавлен")).toBeVisible();
+    expect(await screen.findByText(/Код уже добавлен/)).toBeVisible();
+    // The failed code belongs in the message, not in the field the next scan types into.
+    expect(screen.getByText(/код: BAD-CODE/)).toBeVisible();
+    await waitFor(() => expect(input).toHaveValue(""));
     expect(screen.getByText("РТУ-000051")).toBeVisible();
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
   });
@@ -481,7 +486,7 @@ describe("LogisticsWorkspace", () => {
 
     expect(
       await screen.findByText(
-        "QR распознан, но документ ещё не загружен. Повторите через минуту"
+        /QR распознан, но документ ещё не загружен\. Повторите через минуту/
       )
     ).toBeVisible();
     expect(screen.getByText("Черновик №42")).toBeVisible();

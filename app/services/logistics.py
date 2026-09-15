@@ -485,6 +485,31 @@ def _record_unknown_qr(session: Session, *, code: str) -> None:
     session.commit()
 
 
+_RUSSIAN_LAYOUT = str.maketrans(
+    "йцукенгшщзхъфывапролджэячсмитьбюЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮёЁ",
+    "qwertyuiop[]asdfghjkl;'zxcvbnm,.QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>\\|",
+)
+_MM_LOG_PREFIX_RE = re.compile(r"MMLOG1\|", re.IGNORECASE)
+
+
+def _normalize_scan_input(code: str) -> str:
+    """Repair what a keyboard-wedge scanner does to a printed code.
+
+    A Russian keyboard layout turns ``MMLOG1|transfer|…`` into ``ЬЬДЩП1Ёекфтыаук…``,
+    and the shop scanners prepend an ``F7`` keystroke configured for 1C.
+    """
+
+    normalized = code.strip()
+    layout_fixed = normalized.translate(_RUSSIAN_LAYOUT)
+    if _MM_LOG_PREFIX_RE.search(layout_fixed):
+        normalized = layout_fixed
+    match = _MM_LOG_PREFIX_RE.search(normalized)
+    if match is not None and match.start() > 0:
+        # Any prefix the scanner typed before the code, ``F7`` included.
+        normalized = normalized[match.start() :]
+    return normalized.strip()
+
+
 def _document_number_condition(code: str):
     """Let a worker type the printed document number when the camera cannot read it."""
 
@@ -494,7 +519,7 @@ def _document_number_condition(code: str):
 
 
 def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
-    code = code.strip()
+    code = _normalize_scan_input(code)
     if not code:
         raise _http_error(422, "Введите код или номер документа")
     rows = _lookup_rows(
