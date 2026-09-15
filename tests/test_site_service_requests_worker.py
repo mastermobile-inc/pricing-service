@@ -17,6 +17,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestMessage,
     SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
@@ -40,6 +41,7 @@ from app.services.site_service_requests_worker import (
     _apply_stage_after_customer_reply,
     _handle_awaiting_reply_started,
     apply_site_service_request_worker_plans,
+    auto_close_silent_site_service_requests,
     build_site_service_request_worker_plans,
     choose_site_service_assignee,
     cleanup_uploaded_site_service_request_files,
@@ -6096,3 +6098,302 @@ def test_customer_message_returns_the_card_from_waiting_to_work(db_session) -> N
 
     assert api.items[503]["stageId"] == "DT1134_55:PREPARATION"
     assert not any("site-service-reopened" in row["COMMENT"] for row in api.timeline_comments)
+
+
+def _outbound_message(
+    case: SiteServiceRequestCase,
+    created_at: datetime,
+    *,
+    visible: bool = True,
+) -> SiteServiceRequestMessage:
+    return SiteServiceRequestMessage(
+        case_id=case.id,
+        source_message_id=9000 + int(created_at.timestamp()) % 1000,
+        message_kind="site_message",
+        direction="outbound",
+        author_kind="support",
+        is_visible_to_customer=visible,
+        text_sha256="0" * 64,
+        created_at=created_at,
+    )
+
+
+def _silent_case(
+    db_session: Session,
+    *,
+    item_id: int,
+    answered_at: datetime,
+    stage: str = "DT1134_55:CLIENT",
+    api: FakeBitrixApi,
+    **overrides,
+) -> SiteServiceRequestCase:
+    api.items[item_id] = {"id": str(item_id), "stageId": stage}
+    case = _case(
+        bitrix_item_id=item_id,
+        source_ticket_id=item_id,
+        first_response_at=answered_at,
+        **overrides,
+    )
+    db_session.add(case)
+    db_session.commit()
+    db_session.add(_outbound_message(case, answered_at))
+    db_session.commit()
+    return case
+
+
+def test_silent_case_is_closed_after_five_working_days(db_session) -> None:
+    """Клиент молчит пять рабочих дней — обращение закрывается само, один раз."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=600,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    first = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+    second = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 14, 10, 0, tzinfo=UTC),
+    )
+
+    assert [row["autoClosed"] for row in first] == [True]
+    assert second == []
+    assert api.items[600]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.auto_closed_at is not None
+    assert case.closed_without_response_at is None
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-auto-close" in text for text in comments) == 1
+    assert "5 рабочих дней" in comments[0]
+
+
+def test_weekend_and_holidays_do_not_count_toward_the_silence(db_session) -> None:
+    """Между 5 и 12 июня 2026 выходные и праздник — срок наступает 15-го."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=601,
+        answered_at=datetime(2026, 6, 5, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    early = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 6, 12, 10, 0, tzinfo=UTC),
+    )
+    due = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 6, 15, 10, 0, tzinfo=UTC),
+    )
+
+    assert early == []
+    assert [row["autoClosed"] for row in due] == [True]
+    assert api.items[601]["stageId"] == "DT1134_55:SUCCESS"
+
+
+def test_customer_reply_stops_the_auto_close(db_session) -> None:
+    """Клиент написал — теперь ждёт он нас, закрывать нечего."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=602,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+        awaiting_reply_since=datetime(2026, 9, 10, 9, 0, tzinfo=UTC),
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[602]["stageId"] == "DT1134_55:CLIENT"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["DT1134_55:PREPARATION", "DT1134_55:NEED_EXPERTISE", "DT1134_55:SUCCESS"],
+)
+def test_auto_close_only_from_the_waiting_for_customer_stage(db_session, stage) -> None:
+    """В работе и на экспертизе ждут не клиента, а нас — такие карточки не трогаем."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=603,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        stage=stage,
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[603]["stageId"] == stage
+    db_session.refresh(case)
+    assert case.auto_closed_at is None
+    assert case.auto_close_checked_at is not None
+
+
+def test_auto_close_does_not_poll_bitrix_every_tick(db_session) -> None:
+    """Карточку, которую закрыть нельзя, перепроверяем по часам, а не по минутам."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=604,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        stage="DT1134_55:PREPARATION",
+        api=api,
+    )
+
+    for minute in (0, 1, 2):
+        auto_close_silent_site_service_requests(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            now=datetime(2026, 9, 11, 10, minute, tzinfo=UTC),
+        )
+    reads = [method for method, _params in api.calls].count("crm.item.get")
+    auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 12, 0, tzinfo=UTC),
+    )
+
+    assert reads == 1
+    assert [method for method, _params in api.calls].count("crm.item.get") == 2
+
+
+def test_auto_close_is_disabled_by_zero_days(db_session) -> None:
+    """По умолчанию лента спит: ноль дней — ничего не закрываем."""
+
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=605,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 30, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[605]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_auto_close_skips_when_the_year_is_missing_from_the_calendar(db_session) -> None:
+    """Нет календаря на год — не закрываем: выдуманный срок хуже опоздания."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=606,
+        answered_at=datetime(2028, 3, 1, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2028, 3, 20, 10, 0, tzinfo=UTC),
+    )
+
+    assert [row["errorCode"] for row in results] == ["work_calendar_year_missing"]
+    assert api.items[606]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_internal_note_does_not_start_the_silence_countdown(db_session) -> None:
+    """Скрытая заметка клиенту не видна — молчать ему не с чего."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    api.items[607] = {"id": "607", "stageId": "DT1134_55:CLIENT"}
+    case = _case(
+        bitrix_item_id=607,
+        source_ticket_id=607,
+        first_response_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+    )
+    db_session.add(case)
+    db_session.commit()
+    db_session.add(_outbound_message(case, datetime(2026, 9, 4, 9, 0, tzinfo=UTC), visible=False))
+    db_session.commit()
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[607]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_close_gate_does_not_revert_an_auto_close(db_session) -> None:
+    """Гейт первого ответа не откатывает автозакрытие: ответ клиенту уже был."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=608,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+        assignment_last_error_code="assignment_reconcile_failed",
+    )
+
+    auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 5, tzinfo=UTC),
+    )
+
+    assert api.items[608]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.auto_closed_at is not None
+    assert not any("site-service-close-gate" in row["COMMENT"] for row in api.timeline_comments)

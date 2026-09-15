@@ -229,6 +229,9 @@ class Settings(BaseSettings):
     site_service_requests_expected_user_names: dict[str, str] = Field(default_factory=dict)
     site_service_requests_timezone: str = "Europe/Moscow"
     site_service_requests_first_response_hours: int = Field(default=4, ge=1, le=24)
+    # 0 = автозакрытие выключено. Включается отдельным шагом после релиза,
+    # чтобы накопившиеся молчаливые карточки не закрылись одним тиком.
+    site_service_requests_auto_close_silence_days: int = Field(default=0, ge=0, le=30)
     site_service_requests_timestamp_tolerance_seconds: int = Field(
         default=300,
         ge=1,

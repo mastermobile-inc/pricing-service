@@ -31,6 +31,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixWriter,
     SiteServiceRequestFileCleanup,
     apply_site_service_request_worker_plans,
+    auto_close_silent_site_service_requests,
     build_site_service_request_worker_plans,
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
@@ -196,6 +197,12 @@ def _run_worker(
                 writer=SiteServiceRequestBitrixWriter(resolved_api),
                 limit=args.limit,
             )
+            auto_closed = auto_close_silent_site_service_requests(
+                session,
+                settings=settings,
+                writer=SiteServiceRequestBitrixWriter(resolved_api),
+                limit=args.limit,
+            )
             files = sync_staged_site_service_request_files(
                 session,
                 settings=settings,
@@ -236,6 +243,7 @@ def _run_worker(
                 "emailCount": len(email_results),
                 "assignments": assignments,
                 "awaitingReplies": awaiting_replies,
+                "autoClosed": auto_closed,
                 "files": files,
                 "commands": commands,
                 "dailyReport": daily_report,

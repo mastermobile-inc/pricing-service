@@ -22,6 +22,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestMessage,
     SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
@@ -32,6 +33,7 @@ from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     SiteServiceRequestConfigurationError,
 )
+from app.services.work_calendar import add_working_days
 
 _RETRY_DELAYS_SECONDS = (60, 120, 300, 900, 1800)
 _ORDER_NUMBER_PREFIX_RE = re.compile(r"^(?:№|N[оo]?\.?|#)\s*", re.IGNORECASE)
@@ -3455,6 +3457,196 @@ def escalate_overdue_site_service_replies(
                 "ticketId": case.source_ticket_id,
                 "escalated": True,
                 "awaitingSince": waiting_since.isoformat(),
+            }
+        )
+    return results
+
+
+# Как часто лента возвращается к карточке, которую в прошлый раз закрыть не вышло
+# (например, она стоит в «В работе»). Без паузы такая карточка дёргала бы Bitrix
+# каждую минуту и вытесняла бы из пачки остальные.
+_SITE_SERVICE_AUTO_CLOSE_RECHECK_INTERVAL = timedelta(hours=1)
+
+
+def _russian_working_days(days: int) -> str:
+    """«1 рабочий день», «2 рабочих дня», «5 рабочих дней» — для текста человеку."""
+
+    tail = days % 100
+    if 11 <= tail <= 14:
+        word = "рабочих дней"
+    elif days % 10 == 1:
+        word = "рабочий день"
+    elif days % 10 in {2, 3, 4}:
+        word = "рабочих дня"
+    else:
+        word = "рабочих дней"
+    return f"{days} {word}"
+
+
+def _site_service_request_auto_close_comment(case_id: int, *, silence_days: int) -> str:
+    return (
+        f"Клиент не отвечал {_russian_working_days(silence_days)} после нашего ответа — "
+        "обращение закрыто автоматически. Если клиент напишет снова, карточка "
+        f"откроется сама. [site-service-auto-close:{case_id}]"
+    )
+
+
+def auto_close_silent_site_service_requests(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Закрывает обращения, где мы ответили, а клиент молчит N рабочих дней.
+
+    Ответ клиенту обязателен: карточкой без ответа занимается гейт первого ответа,
+    и закрывать её автоматически нельзя. Ожидание считается от последнего видимого
+    клиенту исходящего сообщения и только по рабочим дням — выходные и праздники
+    клиенту не в счёт.
+
+    Закрываем строго из стадии «Ожидаем клиента». «В работе», «Экспертиза» и
+    уже закрытые карточки не трогаем: там ждут не клиента, а нас.
+
+    Ошибка «нет календаря на такой год» гасит карточку, а не тик: лучше не
+    закрыть вовремя, чем закрыть по выдуманному сроку.
+    """
+
+    if not settings.site_service_requests_bitrix_writes_enabled:
+        return []
+    silence_days = settings.site_service_requests_auto_close_silence_days
+    if silence_days <= 0:
+        return []
+    stage_map = settings.site_service_requests_bitrix_stage_map
+    client_stage_id = str(stage_map.get("client") or "")
+    success_stage_id = str(stage_map.get("success") or "")
+    if not client_stage_id or not success_stage_id:
+        return []
+    entity_type_id = settings.site_service_requests_bitrix_entity_type_id
+    current_time = _as_utc(now or datetime.now(UTC))
+    batch_limit = _site_service_request_worker_limit(settings, limit=limit)
+    # Предфильтр по календарным дням безопасен: N рабочих дней всегда не меньше
+    # N календарных, поэтому ни одна созревшая карточка мимо не пройдёт.
+    silence_floor = current_time - timedelta(days=silence_days)
+    recheck_after = current_time - _SITE_SERVICE_AUTO_CLOSE_RECHECK_INTERVAL
+    last_outbound = (
+        select(func.max(SiteServiceRequestMessage.created_at))
+        .where(
+            SiteServiceRequestMessage.case_id == SiteServiceRequestCase.id,
+            SiteServiceRequestMessage.direction == "outbound",
+            SiteServiceRequestMessage.is_visible_to_customer.is_(True),
+        )
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(SiteServiceRequestCase, last_outbound.label("silent_since"))
+        .where(
+            SiteServiceRequestCase.bitrix_item_id.is_not(None),
+            SiteServiceRequestCase.first_response_at.is_not(None),
+            # Последнее слово за клиентом: пока он ждёт нас, закрывать нечего.
+            SiteServiceRequestCase.awaiting_reply_since.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            or_(
+                SiteServiceRequestCase.auto_close_checked_at.is_(None),
+                SiteServiceRequestCase.auto_close_checked_at <= recheck_after,
+            ),
+            last_outbound.is_not(None),
+            last_outbound <= silence_floor,
+        )
+        # Сортируем по давности молчания, а не по времени проверки: карточка,
+        # срок которой ещё не наступил, иначе вечно занимала бы начало пачки и
+        # вытесняла созревшие. Повторные проверки ограничивает фильтр выше.
+        .order_by(
+            last_outbound.asc(),
+            SiteServiceRequestCase.id,
+        )
+        .limit(batch_limit)
+    ).all()
+
+    results: list[dict[str, Any]] = []
+    for case, silent_since in rows:
+        silent_since_utc = _as_utc(silent_since)
+        case_id = case.id
+        ticket_id = case.source_ticket_id
+        try:
+            deadline = _as_utc(add_working_days(silent_since_utc, silence_days))
+        except ValueError:
+            # Календарь чинится руками, поэтому напоминаем раз в час, а не ежеминутно.
+            case.auto_close_checked_at = current_time
+            session.commit()
+            results.append(
+                {
+                    "caseId": case_id,
+                    "ticketId": ticket_id,
+                    "autoClosed": False,
+                    "silentSince": silent_since_utc.isoformat(),
+                    "errorCode": "work_calendar_year_missing",
+                }
+            )
+            continue
+        if deadline > current_time:
+            continue
+        try:
+            item = writer.get_item(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+            )
+            current_stage = _item_field_value(item, "stageId", default=_MISSING_ITEM_FIELD)
+            if (
+                not isinstance(current_stage, str)
+                or not current_stage
+                or current_stage.strip() != current_stage
+            ):
+                raise RuntimeError("bitrix_stage_readback_failed")
+            if current_stage != client_stage_id:
+                case.auto_close_checked_at = current_time
+                session.commit()
+                continue
+            readback = writer.update_item_fields(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                fields={"stageId": success_stage_id},
+            )
+            if (
+                _item_field_value(readback, "stageId", default=_MISSING_ITEM_FIELD)
+                != success_stage_id
+            ):
+                raise RuntimeError("bitrix_auto_close_readback_failed")
+        except RuntimeError as exc:
+            session.rollback()
+            results.append(
+                {
+                    "caseId": case_id,
+                    "ticketId": ticket_id,
+                    "autoClosed": False,
+                    "silentSince": silent_since_utc.isoformat(),
+                    "errorCode": str(exc),
+                }
+            )
+            continue
+        case.auto_closed_at = current_time
+        case.auto_close_checked_at = current_time
+        session.commit()
+        # Пояснение человеку пишем после коммита: отметка о закрытии уже надёжна,
+        # и сорванный комментарий не приведёт к повторному закрытию карточки.
+        try:
+            writer.add_timeline_comment(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                comment=_site_service_request_auto_close_comment(
+                    case_id, silence_days=silence_days
+                ),
+            )
+        except RuntimeError:
+            pass
+        results.append(
+            {
+                "caseId": case_id,
+                "ticketId": ticket_id,
+                "autoClosed": True,
+                "silentSince": silent_since_utc.isoformat(),
             }
         )
     return results
