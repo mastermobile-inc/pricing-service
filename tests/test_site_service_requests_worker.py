@@ -42,10 +42,12 @@ from app.services.site_service_requests_worker import (
     choose_site_service_assignee,
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
+    compute_awaiting_reply_since,
     contains_exact_order_token,
     create_site_service_request_command,
     decide_site_service_assignment,
     deliver_site_service_request_daily_report,
+    escalate_overdue_site_service_replies,
     next_site_service_request_retry_at,
     normalize_order_number,
     normalize_site_service_email,
@@ -5847,3 +5849,149 @@ def test_prefixed_order_number_still_disambiguates_duplicate_contacts() -> None:
     assert contact.contact_id == 71128
     assert order.status == "matched"
     assert order.deal_id == 40117
+
+
+def _payload_with_history(history: list[dict]) -> SiteServiceRequestEventPayload:
+    payload = _event_payload()
+    payload["history"] = history
+    payload["eventId"] = f"site-support:741:{history[-1]['messageId']}"
+    return SiteServiceRequestEventPayload.model_validate(payload)
+
+
+def _message(message_id: int, kind: str, at: str, *, visible: bool = True) -> dict:
+    return {
+        "messageId": message_id,
+        "authorKind": kind,
+        "createdAt": at,
+        "text": "текст",
+        "files": [],
+        "isVisibleToCustomer": visible,
+    }
+
+
+def test_awaiting_reply_starts_from_the_customer_message_after_our_answer() -> None:
+    """Клиент написал после нашего ответа — обращение снова ждёт ответа."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "support-team", "2026-09-11T18:45:00+03:00"),
+            _message(3, "customer", "2026-09-11T23:36:00+03:00"),
+        ]
+    )
+    case = _case(first_response_at=datetime(2026, 9, 11, 15, 45, tzinfo=UTC))
+
+    awaiting = compute_awaiting_reply_since(payload, case=case)
+
+    assert awaiting == datetime(2026, 9, 11, 20, 36, tzinfo=UTC)
+
+
+def test_awaiting_reply_clears_once_support_answers_last() -> None:
+    """Последнее слово за нами — ждать нечего."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "customer", "2026-09-11T23:36:00+03:00"),
+            _message(3, "support-team", "2026-09-12T09:10:00+03:00"),
+        ]
+    )
+    case = _case(first_response_at=datetime(2026, 9, 11, 15, 45, tzinfo=UTC))
+
+    assert compute_awaiting_reply_since(payload, case=case) is None
+
+
+def test_awaiting_reply_does_not_duplicate_the_first_response_sla() -> None:
+    """Пока первого ответа не было, счётчик один — SLA первого ответа."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "customer", "2026-09-11T23:36:00+03:00"),
+        ]
+    )
+
+    assert compute_awaiting_reply_since(payload, case=_case()) is None
+
+
+def test_internal_note_does_not_count_as_an_answer_to_the_customer() -> None:
+    """Скрытая заметка клиенту не видна, ожидание с неё не снимается."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "support-team", "2026-09-11T18:45:00+03:00"),
+            _message(3, "customer", "2026-09-11T23:36:00+03:00"),
+            _message(4, "support-team", "2026-09-12T08:00:00+03:00", visible=False),
+        ]
+    )
+    case = _case(first_response_at=datetime(2026, 9, 11, 15, 45, tzinfo=UTC))
+
+    assert compute_awaiting_reply_since(payload, case=case) == datetime(
+        2026, 9, 11, 20, 36, tzinfo=UTC
+    )
+
+
+def test_overdue_reply_escalates_once_with_a_card_comment(db_session) -> None:
+    """Просроченный повторный ответ эскалируется один раз, а не каждый тик."""
+
+    settings = _worker_settings(
+        site_service_requests_first_response_hours=4,
+        site_service_requests_escalation_user_id=131016,
+    )
+    api = FakeBitrixApi()
+    case = _case(
+        bitrix_item_id=417,
+        source_ticket_id=784,
+        awaiting_reply_since=datetime(2026, 9, 15, 6, 0, tzinfo=UTC),
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    first = escalate_overdue_site_service_replies(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 15, 11, 0, tzinfo=UTC),
+    )
+    second = escalate_overdue_site_service_replies(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+    )
+
+    assert [row["escalated"] for row in first] == [True]
+    assert second == []
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-awaiting-reply" in text for text in comments) == 1
+    assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
+    db_session.refresh(case)
+    assert case.awaiting_reply_escalated_at is not None
+
+
+def test_reply_within_the_deadline_is_not_escalated(db_session) -> None:
+    """Пока срок не вышел, никого не дёргаем."""
+
+    settings = _worker_settings(
+        site_service_requests_first_response_hours=4,
+        site_service_requests_escalation_user_id=131016,
+    )
+    api = FakeBitrixApi()
+    case = _case(
+        bitrix_item_id=418,
+        source_ticket_id=785,
+        awaiting_reply_since=datetime(2026, 9, 15, 10, 0, tzinfo=UTC),
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    results = escalate_overdue_site_service_replies(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.timeline_comments == []
