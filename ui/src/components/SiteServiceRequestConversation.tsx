@@ -36,6 +36,18 @@ type Conversation = {
   messages: ConversationMessage[];
 };
 
+type OrderStatus = {
+  dealId: number;
+  orderRef: string | null;
+  tracking: string | null;
+  statusText: string | null;
+  trackingLink: string | null;
+  plannedDeliveryDate: string | null;
+  storageDate: string | null;
+  multipleShipments: boolean;
+  customerMessage: string;
+};
+
 const TEMPLATES = [
   "Здравствуйте! Обращение приняли в работу. Сообщим о результате здесь.",
   "Пожалуйста, пришлите номер заказа и фотографии товара, упаковки и дефекта.",
@@ -73,6 +85,7 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [orderStatus, setOrderStatus] = useState<OrderStatus | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const pendingRequestIdRef = useRef<string | null>(null);
 
@@ -101,6 +114,26 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
     const timer = window.setInterval(() => void load(true), 15_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  // Статус заказа читается из Битрикса один раз при открытии и намеренно не
+  // попадает в опрос каждые 15 секунд: он меняется раз в сутки, а нагрузка на
+  // портал росла бы с каждой открытой карточкой.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data } = await api.get<OrderStatus>(
+          `/site-service-requests/ui/items/${itemId}/order-status`,
+        );
+        if (!cancelled) setOrderStatus(data);
+      } catch {
+        // Заказ не привязан или Битрикс недоступен — подсказки просто не будет.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [itemId]);
 
   useEffect(() => {
     if (!loading) listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -260,8 +293,16 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
           {mode === "note" && <p className="ssr-composer__notice">Клиент не увидит эту заметку.</p>}
           {mode === "reply" && <select aria-label="Шаблон ответа" defaultValue="" onChange={(event) => { if (event.target.value) { setText(event.target.value); resetPendingRequest(); } event.target.value = ""; }}>
             <option value="">Вставить шаблон…</option>
+            {orderStatus?.customerMessage && !orderStatus.multipleShipments
+              ? <option value={orderStatus.customerMessage}>Где заказ — статус доставки</option>
+              : null}
             {TEMPLATES.map((template) => <option key={template} value={template}>{template}</option>)}
           </select>}
+          {mode === "reply" && orderStatus?.multipleShipments ? (
+            <p className="ssr-composer__notice" role="status">
+              По заказу несколько отправлений — общий трек клиенту отправлять нельзя. Проверьте отправления в сделке.
+            </p>
+          ) : null}
           <textarea value={text} onChange={(event) => { setText(event.target.value); resetPendingRequest(); }} placeholder={mode === "note" ? "Заметка для коллег" : "Напишите ответ клиенту"} rows={4} />
           {mode === "reply" && conversation.canAttachFiles && <label className="ssr-composer__files">Прикрепить файлы
             <input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files || []).slice(0, 5)); resetPendingRequest(); }} />

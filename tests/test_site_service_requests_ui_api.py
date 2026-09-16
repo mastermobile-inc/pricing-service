@@ -23,6 +23,7 @@ def _ui_dependencies(
     attachments_enabled: bool = True,
     user_id: int = 131016,
     write_allowed_user_ids: list[int] | None = None,
+    stage_map: dict[str, str] | None = None,
 ):
     settings = Settings(
         site_service_requests_ui_enabled=True,
@@ -35,6 +36,7 @@ def _ui_dependencies(
         site_service_requests_event_encryption_key=base64.urlsafe_b64encode(b"u" * 32).decode(
             "ascii"
         ),
+        site_service_requests_bitrix_stage_map=stage_map or {},
     )
 
     def override_db():
@@ -354,3 +356,222 @@ def test_returns_tab_keeps_other_cards_out_of_scope(client, db_session, monkeypa
 
     assert foreign_list.status_code == 403
     assert foreign_create.status_code == 403
+
+
+def _order_status(**overrides):
+    from app.services.site_service_request_order_status import SiteServiceRequestOrderStatus
+
+    values = {
+        "deal_id": 33485,
+        "order_ref": "240315",
+        "tracking": "10311127882",
+        "status_text": "Вручен 26.08.2026 14:58",
+        "tracking_link": "https://www.cdek.ru/ru/tracking/?order_id=10311127882",
+        "planned_delivery_date": None,
+        "storage_date": None,
+        "multiple_shipments": False,
+        "customer_message": "Здравствуйте! По вашему заказу №240315: Вручен 26.08.2026 14:58.",
+    }
+    values.update(overrides)
+    return SiteServiceRequestOrderStatus(**values)
+
+
+def test_order_status_is_read_from_the_linked_deal(client, db_session, monkeypatch):
+    """Кнопка «Где заказ» берёт сделку из карточки и отдаёт готовый текст."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    db_session.add(
+        SiteServiceRequestCase(
+            source_ticket_id=746,
+            first_seen_at=datetime.now(UTC),
+            bitrix_item_id=391,
+            crm_deal_id=33485,
+            assignment_state="waiting",
+            round_robin_seq=0,
+            sync_status="synced",
+        )
+    )
+    db_session.commit()
+    captured: dict[str, int] = {}
+
+    def _fake(*, settings, deal_id):
+        captured["dealId"] = deal_id
+        return _order_status()
+
+    monkeypatch.setattr(
+        ui_module.order_status_service,
+        "get_site_service_request_order_status",
+        _fake,
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 200
+    assert captured["dealId"] == 33485
+    body = response.json()
+    assert body["dealId"] == 33485
+    assert body["multipleShipments"] is False
+    assert body["customerMessage"].startswith("Здравствуйте! По вашему заказу №240315")
+
+
+def test_order_status_without_a_known_deal_is_not_found(client, db_session, monkeypatch):
+    """Заказ не привязан ни в базе, ни в карточке — подставлять нечего."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "order_status_deal_unknown"
+
+
+def test_order_status_survives_an_unavailable_bitrix(client, db_session, monkeypatch):
+    """Недоступный портал — это «попробуйте позже», а не ошибка карточки."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    db_session.add(
+        SiteServiceRequestCase(
+            source_ticket_id=747,
+            first_seen_at=datetime.now(UTC),
+            bitrix_item_id=391,
+            crm_deal_id=33485,
+            assignment_state="waiting",
+            round_robin_seq=0,
+            sync_status="synced",
+        )
+    )
+    db_session.commit()
+
+    def _unavailable(**_kwargs):
+        raise ui_module.order_status_service.SiteServiceRequestOrderStatusUnavailable("нет связи")
+
+    monkeypatch.setattr(
+        ui_module.order_status_service,
+        "get_site_service_request_order_status",
+        _unavailable,
+    )
+
+    with _ui_dependencies(db_session):
+        response = client.get("/api/site-service-requests/ui/items/391/order-status")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "order_status_unavailable"
+
+
+def test_order_status_is_refused_for_another_card(client, db_session):
+    """Сессия открыта на одну карточку — чужой заказ через неё не посмотреть."""
+
+    with _ui_dependencies(db_session, item_id=391):
+        response = client.get("/api/site-service-requests/ui/items/999/order-status")
+
+    assert response.status_code == 403
+
+
+def _goods_stage_settings_override(monkeypatch, *, moved: list):
+    """Подменяет перевод стадии, чтобы не ходить в Битрикс из теста."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    def _move(*, settings, item_id, stage_id):
+        moved.append((item_id, stage_id))
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "move_service_request_stage",
+        _move,
+    )
+
+
+def test_registering_a_return_moves_the_card_to_waiting_for_goods(client, db_session, monkeypatch):
+    """Возврат заведён — карточка уходит ждать посылку, а не ответ клиента."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+    moved: list = []
+    _goods_stage_settings_override(monkeypatch, moved=moved)
+    stage_map = {
+        "new": "DT1134_55:NEW",
+        "work": "DT1134_55:PREPARATION",
+        "client": "DT1134_55:CLIENT",
+        "goods": "DT1134_55:CLIENT_2",
+    }
+
+    with _ui_dependencies(db_session, stage_map=stage_map):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-1"},
+        )
+
+    assert created.status_code == 201
+    assert moved == [(391, "DT1134_55:CLIENT_2")]
+
+
+def test_return_registration_survives_a_failed_stage_move(client, db_session, monkeypatch):
+    """Битрикс не ответил — возврат всё равно зарегистрирован, без ложной ошибки."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("bitrix is down")
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "move_service_request_stage",
+        _boom,
+    )
+    stage_map = {"work": "DT1134_55:PREPARATION", "goods": "DT1134_55:CLIENT_2"}
+
+    with _ui_dependencies(db_session, stage_map=stage_map):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-2"},
+        )
+
+    assert created.status_code == 201
+    assert created.json()["returns"][0]["tracking_number"] == "CDEK-GOODS-2"
+
+
+def test_return_registration_does_not_move_the_stage_until_it_exists(
+    client, db_session, monkeypatch
+):
+    """Стадии «Ожидаем товар» в портале ещё нет — карточку не трогаем."""
+
+    from app.api import site_service_requests_ui as ui_module
+
+    monkeypatch.setattr(
+        ui_module.customer_return_request_service,
+        "get_customer_return_service_request",
+        lambda **_kwargs: _service_request_link(),
+    )
+    moved: list = []
+    _goods_stage_settings_override(monkeypatch, moved=moved)
+
+    with _ui_dependencies(db_session):
+        created = client.post(
+            "/api/site-service-requests/ui/items/391/returns",
+            json={"carrier": "cdek", "trackingNumber": "CDEK-GOODS-3"},
+        )
+
+    assert created.status_code == 201
+    assert moved == []

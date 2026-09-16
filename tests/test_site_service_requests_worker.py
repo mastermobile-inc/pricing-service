@@ -12,11 +12,13 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.models.customer_return import CustomerReturnShipment
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestMessage,
     SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
@@ -38,8 +40,13 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
     _apply_stage_after_customer_reply,
+    _close_site_service_request_as_duplicate,
+    _confirm_site_service_request_command_readback,
+    _detect_site_service_request_duplicate,
     _handle_awaiting_reply_started,
+    _is_substantive_support_reply,
     apply_site_service_request_worker_plans,
+    auto_close_silent_site_service_requests,
     build_site_service_request_worker_plans,
     choose_site_service_assignee,
     cleanup_uploaded_site_service_request_files,
@@ -56,6 +63,7 @@ from app.services.site_service_requests_worker import (
     normalize_site_service_phone,
     preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
+    reconcile_site_service_request_return_stages,
     render_site_service_request_plans,
     sync_staged_site_service_request_files,
 )
@@ -5860,12 +5868,19 @@ def _payload_with_history(history: list[dict]) -> SiteServiceRequestEventPayload
     return SiteServiceRequestEventPayload.model_validate(payload)
 
 
-def _message(message_id: int, kind: str, at: str, *, visible: bool = True) -> dict:
+def _message(
+    message_id: int,
+    kind: str,
+    at: str,
+    *,
+    visible: bool = True,
+    text: str = "Проверили заказ, отвечаем по существу",
+) -> dict:
     return {
         "messageId": message_id,
         "authorKind": kind,
         "createdAt": at,
-        "text": "текст",
+        "text": text,
         "files": [],
         "isVisibleToCustomer": visible,
     }
@@ -6096,3 +6111,905 @@ def test_customer_message_returns_the_card_from_waiting_to_work(db_session) -> N
 
     assert api.items[503]["stageId"] == "DT1134_55:PREPARATION"
     assert not any("site-service-reopened" in row["COMMENT"] for row in api.timeline_comments)
+
+
+def _outbound_message(
+    case: SiteServiceRequestCase,
+    created_at: datetime,
+    *,
+    visible: bool = True,
+) -> SiteServiceRequestMessage:
+    return SiteServiceRequestMessage(
+        case_id=case.id,
+        source_message_id=9000 + int(created_at.timestamp()) % 1000,
+        message_kind="site_message",
+        direction="outbound",
+        author_kind="support",
+        is_visible_to_customer=visible,
+        text_sha256="0" * 64,
+        created_at=created_at,
+    )
+
+
+def _silent_case(
+    db_session: Session,
+    *,
+    item_id: int,
+    answered_at: datetime,
+    stage: str = "DT1134_55:CLIENT",
+    api: FakeBitrixApi,
+    **overrides,
+) -> SiteServiceRequestCase:
+    api.items[item_id] = {"id": str(item_id), "stageId": stage}
+    case = _case(
+        bitrix_item_id=item_id,
+        source_ticket_id=item_id,
+        first_response_at=answered_at,
+        **overrides,
+    )
+    db_session.add(case)
+    db_session.commit()
+    db_session.add(_outbound_message(case, answered_at))
+    db_session.commit()
+    return case
+
+
+def test_silent_case_is_closed_after_five_working_days(db_session) -> None:
+    """Клиент молчит пять рабочих дней — обращение закрывается само, один раз."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=600,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    first = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+    second = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 14, 10, 0, tzinfo=UTC),
+    )
+
+    assert [row["autoClosed"] for row in first] == [True]
+    assert second == []
+    assert api.items[600]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.auto_closed_at is not None
+    assert case.closed_without_response_at is None
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-auto-close" in text for text in comments) == 1
+    assert "5 рабочих дней" in comments[0]
+
+
+def test_weekend_and_holidays_do_not_count_toward_the_silence(db_session) -> None:
+    """Между 5 и 12 июня 2026 выходные и праздник — срок наступает 15-го."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=601,
+        answered_at=datetime(2026, 6, 5, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    early = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 6, 12, 10, 0, tzinfo=UTC),
+    )
+    due = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 6, 15, 10, 0, tzinfo=UTC),
+    )
+
+    assert early == []
+    assert [row["autoClosed"] for row in due] == [True]
+    assert api.items[601]["stageId"] == "DT1134_55:SUCCESS"
+
+
+def test_customer_reply_stops_the_auto_close(db_session) -> None:
+    """Клиент написал — теперь ждёт он нас, закрывать нечего."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=602,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+        awaiting_reply_since=datetime(2026, 9, 10, 9, 0, tzinfo=UTC),
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[602]["stageId"] == "DT1134_55:CLIENT"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["DT1134_55:PREPARATION", "DT1134_55:NEED_EXPERTISE", "DT1134_55:SUCCESS"],
+)
+def test_auto_close_only_from_the_waiting_for_customer_stage(db_session, stage) -> None:
+    """В работе и на экспертизе ждут не клиента, а нас — такие карточки не трогаем."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=603,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        stage=stage,
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[603]["stageId"] == stage
+    db_session.refresh(case)
+    assert case.auto_closed_at is None
+    assert case.auto_close_checked_at is not None
+
+
+def test_auto_close_does_not_poll_bitrix_every_tick(db_session) -> None:
+    """Карточку, которую закрыть нельзя, перепроверяем по часам, а не по минутам."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=604,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        stage="DT1134_55:PREPARATION",
+        api=api,
+    )
+
+    for minute in (0, 1, 2):
+        auto_close_silent_site_service_requests(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            now=datetime(2026, 9, 11, 10, minute, tzinfo=UTC),
+        )
+    reads = [method for method, _params in api.calls].count("crm.item.get")
+    auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 12, 0, tzinfo=UTC),
+    )
+
+    assert reads == 1
+    assert [method for method, _params in api.calls].count("crm.item.get") == 2
+
+
+def test_auto_close_is_disabled_by_zero_days(db_session) -> None:
+    """По умолчанию лента спит: ноль дней — ничего не закрываем."""
+
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=605,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 30, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[605]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_auto_close_skips_when_the_year_is_missing_from_the_calendar(db_session) -> None:
+    """Нет календаря на год — не закрываем: выдуманный срок хуже опоздания."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=606,
+        answered_at=datetime(2028, 3, 1, 9, 0, tzinfo=UTC),
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2028, 3, 20, 10, 0, tzinfo=UTC),
+    )
+
+    assert [row["errorCode"] for row in results] == ["work_calendar_year_missing"]
+    assert api.items[606]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_internal_note_does_not_start_the_silence_countdown(db_session) -> None:
+    """Скрытая заметка клиенту не видна — молчать ему не с чего."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    api.items[607] = {"id": "607", "stageId": "DT1134_55:CLIENT"}
+    case = _case(
+        bitrix_item_id=607,
+        source_ticket_id=607,
+        first_response_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+    )
+    db_session.add(case)
+    db_session.commit()
+    db_session.add(_outbound_message(case, datetime(2026, 9, 4, 9, 0, tzinfo=UTC), visible=False))
+    db_session.commit()
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[607]["stageId"] == "DT1134_55:CLIENT"
+
+
+def test_close_gate_does_not_revert_an_auto_close(db_session) -> None:
+    """Гейт первого ответа не откатывает автозакрытие: ответ клиенту уже был."""
+
+    settings = _stage_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    case = _silent_case(
+        db_session,
+        item_id=608,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        api=api,
+        assignment_last_error_code="assignment_reconcile_failed",
+    )
+
+    auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 5, tzinfo=UTC),
+    )
+
+    assert api.items[608]["stageId"] == "DT1134_55:SUCCESS"
+    db_session.refresh(case)
+    assert case.auto_closed_at is not None
+    assert not any("site-service-close-gate" in row["COMMENT"] for row in api.timeline_comments)
+
+
+@pytest.mark.parametrize(
+    ("text", "substantive"),
+    [
+        ("Здравствуйте!", False),
+        ("здравствуйте", False),
+        ("Добрый день, Иван!", False),
+        ("Приветствую!", False),
+        ("саламчик", False),
+        ("test", False),
+        ("", False),
+        (None, False),
+        ("Да, вернём деньги", True),
+        ("Здравствуйте! Заказ уже в пути", True),
+        ("Доброе утро, отправили замену сегодня", True),
+    ],
+)
+def test_greeting_detection(text, substantive) -> None:
+    """Одно приветствие — не ответ; приветствие с продолжением — ответ."""
+
+    assert _is_substantive_support_reply(text) is substantive
+
+
+def _applied_reply_command(
+    db_session,
+    case,
+    *,
+    source_message_id: int,
+    created_at: datetime,
+) -> None:
+    """Ответ, который уже подтверждён сайтом и привязан к сообщению истории."""
+
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    command_key = f"site-service-reply:{case.id}:{source_message_id}"
+    db_session.add(
+        SiteServiceRequestCommand(
+            case_id=case.id,
+            command_key=command_key,
+            reply_encrypted=cipher.encrypt(b"reply", event_id=command_key),
+            reply_sha256="0" * 64,
+            status="applied",
+            source_message_id=source_message_id,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+    db_session.commit()
+
+
+def _greeting_readback(db_session, *, text: str):
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-08-22T09:00:00+03:00"),
+            _message(2, "support-team", "2026-08-22T10:00:00+03:00", text=text),
+        ]
+    )
+    case = _case()
+    db_session.add(case)
+    db_session.commit()
+    _applied_reply_command(
+        db_session,
+        case,
+        source_message_id=2,
+        created_at=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    readback = _confirm_site_service_request_command_readback(
+        db_session, case=case, payload=payload
+    )
+    return case, readback
+
+
+def test_greeting_only_reply_does_not_close_the_first_response_sla(db_session) -> None:
+    """«Здравствуйте!» клиенту ничего не ответило — срок первого ответа идёт дальше."""
+
+    case, readback = _greeting_readback(db_session, text="Здравствуйте!")
+
+    assert readback.substantive is False
+    assert case.first_response_at is None
+
+
+def test_greeting_only_reply_is_still_delivered_to_the_customer(db_session) -> None:
+    """Сообщение ушло клиенту: карточка получает «Отправлено», ответ не уедет второй раз."""
+
+    case, readback = _greeting_readback(db_session, text="Здравствуйте!")
+
+    assert readback.delivered is True
+    assert case.latest_outbound_message_id == 2
+
+
+def test_short_but_meaningful_reply_counts(db_session) -> None:
+    """Короткий, но осмысленный ответ срок первого ответа закрывает."""
+
+    case, readback = _greeting_readback(db_session, text="Да, вернём деньги")
+
+    assert readback.delivered is True
+    assert readback.substantive is True
+    assert case.first_response_at == datetime(2026, 8, 22, 7, 0, tzinfo=UTC)
+
+
+def test_reply_without_a_confirmed_command_is_not_delivered(db_session) -> None:
+    """Без подтверждения с сайта ответ не считается доставленным — как и раньше."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-08-22T09:00:00+03:00"),
+            _message(2, "support-team", "2026-08-22T10:00:00+03:00"),
+        ]
+    )
+    case = _case()
+    db_session.add(case)
+    db_session.commit()
+
+    readback = _confirm_site_service_request_command_readback(
+        db_session, case=case, payload=payload
+    )
+
+    assert readback.delivered is False
+    assert readback.substantive is False
+
+
+def test_greeting_only_reply_keeps_the_customer_waiting() -> None:
+    """После «Здравствуйте!» клиент по-прежнему ждёт ответа, а не наоборот."""
+
+    payload = _payload_with_history(
+        [
+            _message(1, "customer", "2026-09-11T13:11:00+03:00"),
+            _message(2, "support-team", "2026-09-11T18:45:00+03:00"),
+            _message(3, "customer", "2026-09-11T23:36:00+03:00"),
+            _message(4, "support-team", "2026-09-12T08:00:00+03:00", text="Здравствуйте!"),
+        ]
+    )
+    case = _case(first_response_at=datetime(2026, 9, 11, 15, 45, tzinfo=UTC))
+
+    assert compute_awaiting_reply_since(payload, case=case) == datetime(
+        2026, 9, 11, 20, 36, tzinfo=UTC
+    )
+
+
+def _duplicate_settings(**overrides) -> Settings:
+    """Настройки с включённым отловом дублей и причиной закрытия «дубль»."""
+
+    base = _stage_settings()
+    field_map = dict(base.site_service_requests_bitrix_field_map)
+    field_map["close_without_response_reason"] = "UF_CLOSE_REASON"
+    enum_map = dict(base.site_service_requests_bitrix_enum_map)
+    enum_map["close_without_response_reason_duplicate"] = "530"
+    values = {
+        "site_service_requests_duplicate_window_minutes": 5,
+        "site_service_requests_bitrix_webhook_url": "https://portal.example/rest/1/token/",
+        "site_service_requests_bitrix_field_map": field_map,
+        "site_service_requests_bitrix_enum_map": enum_map,
+    }
+    values.update(overrides)
+    return _stage_settings(**values)
+
+
+def _twin_cases(
+    db_session,
+    *,
+    gap: timedelta,
+    newer_deal_id: int = 33485,
+    newer_kind: str = "site_ticket",
+    **newer_overrides,
+):
+    """Две карточки одного клиента: первая, затем вторая через `gap`."""
+
+    first_seen = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)
+    older = _case(
+        source_ticket_id=759,
+        bitrix_item_id=759,
+        first_seen_at=first_seen,
+        crm_contact_id=501,
+        crm_deal_id=33485,
+    )
+    newer = _case(
+        source_ticket_id=760,
+        bitrix_item_id=760,
+        first_seen_at=first_seen + gap,
+        crm_contact_id=501,
+        crm_deal_id=newer_deal_id,
+        source_kind=newer_kind,
+        **newer_overrides,
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+    return older, newer
+
+
+def test_second_ticket_within_the_window_is_closed_as_a_duplicate(db_session) -> None:
+    """Клиент нажал «отправить» дважды — вторая карточка помечается дублем."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    api = FakeBitrixApi()
+    api.items[760] = {"id": "760", "stageId": "DT1134_55:NEW"}
+    api.items[759] = {"id": "759", "stageId": "DT1134_55:NEW"}
+
+    primary = _detect_site_service_request_duplicate(db_session, case=newer, settings=settings)
+    assert primary is not None
+    assert primary.id == older.id
+
+    _close_site_service_request_as_duplicate(
+        case=newer,
+        primary=primary,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        field_map=settings.site_service_requests_bitrix_field_map,
+        item_id=760,
+        now=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+    )
+
+    assert api.items[760]["stageId"] == "DT1134_55:FAIL"
+    # Битрикс принимает UF_-поля в camelCase, поэтому в карточке ключ такой.
+    assert api.items[760]["ufCloseReason"] == "530"
+    assert newer.close_without_response_reason == "duplicate"
+    assert newer.closed_without_response_at is not None
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert any("site-service-duplicate:" in text for text in comments)
+    assert any("site-service-duplicate-of:" in text for text in comments)
+
+
+def test_duplicate_detection_keeps_the_older_card_open(db_session) -> None:
+    """Дублем помечается более новая карточка, старшая остаётся рабочей."""
+
+    settings = _duplicate_settings()
+    older, _newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+
+    assert _detect_site_service_request_duplicate(db_session, case=older, settings=settings) is None
+
+
+def test_second_question_after_the_window_is_not_a_duplicate(db_session) -> None:
+    """Через девять минут клиент задаёт второй вопрос — это не двойной клик."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(minutes=9, seconds=20))
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_ticket_with_an_answer_is_never_marked_as_a_duplicate(db_session) -> None:
+    """По карточке уже ответили — закрывать её дублем поздно."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(
+        db_session,
+        gap=timedelta(seconds=10),
+        first_response_at=datetime(2026, 9, 16, 9, 30, tzinfo=UTC),
+    )
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_the_same_deal(db_session) -> None:
+    """Разные заказы — разные обращения, даже от одного клиента подряд."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10), newer_deal_id=37033)
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_a_known_deal(db_session) -> None:
+    """Заказ не определён — доказательства «это про одно и то же» нет."""
+
+    settings = _duplicate_settings()
+    first_seen = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)
+    older = _case(
+        source_ticket_id=759,
+        bitrix_item_id=759,
+        first_seen_at=first_seen,
+        crm_contact_id=501,
+        crm_deal_id=None,
+    )
+    newer = _case(
+        source_ticket_id=760,
+        bitrix_item_id=760,
+        first_seen_at=first_seen + timedelta(seconds=10),
+        crm_contact_id=501,
+        crm_deal_id=None,
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_requires_the_same_source(db_session) -> None:
+    """Письмо и тикет сайта по одному заказу — нормальная пара, нужен человек."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10), newer_kind="bitrix_mail")
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_card_already_worked_on(db_session) -> None:
+    """По карточке уже готовили ответ — с ней работали, закрывать нельзя."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    _add_reply_command(
+        db_session,
+        newer,
+        status="pending",
+        created_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+    )
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_card_with_an_open_return(db_session) -> None:
+    """По карточке заведён возврат — это уже работа, а не случайный повтор."""
+
+    settings = _duplicate_settings()
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    db_session.add(
+        CustomerReturnShipment(
+            carrier="cdek",
+            tracking_number="CDEK-760",
+            status="in_transit",
+            status_changed_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+            source="service_request_card",
+            service_request_item_id=760,
+            updated_at=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_detection_skips_a_closed_primary(db_session) -> None:
+    """Основная карточка закрыта — отправлять клиента туда значит завести в тупик."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    older.closed_without_response_at = datetime(2026, 9, 16, 9, 0, 5, tzinfo=UTC)
+    older.close_without_response_reason = "spam"
+    db_session.commit()
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_window_zero_disables_detection(db_session) -> None:
+    """По умолчанию отлов выключен и ничего не помечает."""
+
+    settings = _duplicate_settings(site_service_requests_duplicate_window_minutes=0)
+    _older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def test_duplicate_close_is_not_repeated_on_the_second_tick(db_session) -> None:
+    """Повторная обработка не задваивает комментарии и не ищет дубль заново."""
+
+    settings = _duplicate_settings()
+    older, newer = _twin_cases(db_session, gap=timedelta(seconds=10))
+    api = FakeBitrixApi()
+    api.items[760] = {"id": "760", "stageId": "DT1134_55:NEW"}
+    api.items[759] = {"id": "759", "stageId": "DT1134_55:NEW"}
+    writer = SiteServiceRequestBitrixWriter(api)
+    for _ in range(2):
+        _close_site_service_request_as_duplicate(
+            case=newer,
+            primary=older,
+            settings=settings,
+            writer=writer,
+            field_map=settings.site_service_requests_bitrix_field_map,
+            item_id=760,
+            now=datetime(2026, 9, 16, 9, 1, tzinfo=UTC),
+        )
+
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-duplicate:" in text for text in comments) == 1
+    assert sum("site-service-duplicate-of:" in text for text in comments) == 1
+    db_session.commit()
+    assert _detect_site_service_request_duplicate(db_session, case=newer, settings=settings) is None
+
+
+def _goods_settings(**overrides) -> Settings:
+    """Стадии с отдельным «Ожидаем товар» — так, как они будут в портале."""
+
+    values = {
+        "site_service_requests_bitrix_stage_map": {
+            "new": "DT1134_55:NEW",
+            "work": "DT1134_55:PREPARATION",
+            "client": "DT1134_55:CLIENT",
+            "goods": "DT1134_55:CLIENT_2",
+            "expertise": "DT1134_55:NEED_EXPERTISE",
+            "success": "DT1134_55:SUCCESS",
+            "failure": "DT1134_55:FAIL",
+        },
+    }
+    values.update(overrides)
+    return _worker_settings(**values)
+
+
+def _case_with_return(db_session, *, item_id: int, status: str, api: FakeBitrixApi, stage: str):
+    api.items[item_id] = {"id": str(item_id), "stageId": stage}
+    case = _case(bitrix_item_id=item_id, source_ticket_id=item_id)
+    db_session.add(case)
+    db_session.add(
+        CustomerReturnShipment(
+            carrier="cdek",
+            tracking_number=f"CDEK-{item_id}",
+            status=status,
+            status_changed_at=datetime(2026, 9, 16, 9, 0, tzinfo=UTC),
+            source="service_request_card",
+            service_request_item_id=item_id,
+            updated_at=datetime(2026, 9, 16, 9, 0, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+    return case
+
+
+@pytest.mark.parametrize("stage", ["DT1134_55:PREPARATION", "DT1134_55:CLIENT"])
+def test_open_return_moves_the_card_to_waiting_for_goods(db_session, stage) -> None:
+    """Посылка едет — карточка ждёт товар, а не ответ клиента."""
+
+    api = FakeBitrixApi()
+    _case_with_return(db_session, item_id=800, status="in_transit", api=api, stage=stage)
+
+    results = reconcile_site_service_request_return_stages(
+        db_session,
+        settings=_goods_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert [row["stageId"] for row in results] == ["DT1134_55:CLIENT_2"]
+    assert api.items[800]["stageId"] == "DT1134_55:CLIENT_2"
+
+
+def test_open_return_does_not_touch_expertise(db_session) -> None:
+    """На экспертизе свой порядок — лента туда не лезет."""
+
+    api = FakeBitrixApi()
+    _case_with_return(
+        db_session,
+        item_id=801,
+        status="in_transit",
+        api=api,
+        stage="DT1134_55:NEED_EXPERTISE",
+    )
+
+    results = reconcile_site_service_request_return_stages(
+        db_session,
+        settings=_goods_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[801]["stageId"] == "DT1134_55:NEED_EXPERTISE"
+
+
+def test_finished_return_returns_the_card_to_work(db_session) -> None:
+    """Товар у нас — очередь наша: осмотреть и решить. Комментарий один раз."""
+
+    api = FakeBitrixApi()
+    _case_with_return(
+        db_session,
+        item_id=802,
+        status="picked_up",
+        api=api,
+        stage="DT1134_55:CLIENT_2",
+    )
+    settings = _goods_settings()
+    writer = SiteServiceRequestBitrixWriter(api)
+
+    first = reconcile_site_service_request_return_stages(
+        db_session, settings=settings, writer=writer, now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+    )
+    second = reconcile_site_service_request_return_stages(
+        db_session, settings=settings, writer=writer, now=datetime(2026, 9, 16, 12, 1, tzinfo=UTC)
+    )
+
+    assert [row["stageId"] for row in first] == ["DT1134_55:PREPARATION"]
+    assert second == []
+    assert api.items[802]["stageId"] == "DT1134_55:PREPARATION"
+    comments = [row["COMMENT"] for row in api.timeline_comments]
+    assert sum("site-service-goods-arrived" in text for text in comments) == 1
+
+
+def test_waiting_for_goods_is_not_touched_without_returns(db_session) -> None:
+    """Возврата по карточке нет — стадию человек поставил сам, не трогаем."""
+
+    api = FakeBitrixApi()
+    api.items[803] = {"id": "803", "stageId": "DT1134_55:CLIENT_2"}
+    db_session.add(_case(bitrix_item_id=803, source_ticket_id=803))
+    db_session.commit()
+
+    results = reconcile_site_service_request_return_stages(
+        db_session,
+        settings=_goods_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[803]["stageId"] == "DT1134_55:CLIENT_2"
+
+
+def test_long_finished_return_stops_polling_bitrix(db_session) -> None:
+    """Возврат завершён неделю назад — карточку больше не перечитываем."""
+
+    api = FakeBitrixApi()
+    api.items[804] = {"id": "804", "stageId": "DT1134_55:PREPARATION"}
+    case = _case(bitrix_item_id=804, source_ticket_id=804)
+    db_session.add(case)
+    db_session.add(
+        CustomerReturnShipment(
+            carrier="cdek",
+            tracking_number="CDEK-804",
+            status="onec_return_confirmed",
+            status_changed_at=datetime(2026, 9, 1, 9, 0, tzinfo=UTC),
+            source="service_request_card",
+            service_request_item_id=804,
+            updated_at=datetime(2026, 9, 1, 9, 0, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+
+    results = reconcile_site_service_request_return_stages(
+        db_session,
+        settings=_goods_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert [method for method, _params in api.calls].count("crm.item.get") == 0
+
+
+def test_return_stage_lane_is_inert_without_the_goods_stage(db_session) -> None:
+    """Пока стадию не создали в портале, лента молчит и в Битрикс не ходит."""
+
+    api = FakeBitrixApi()
+    _case_with_return(
+        db_session,
+        item_id=805,
+        status="in_transit",
+        api=api,
+        stage="DT1134_55:PREPARATION",
+    )
+
+    results = reconcile_site_service_request_return_stages(
+        db_session,
+        settings=_stage_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[805]["stageId"] == "DT1134_55:PREPARATION"
+
+
+def test_customer_message_does_not_pull_the_card_out_of_waiting_for_goods(db_session) -> None:
+    """Посылка едет — сообщение клиента ожидание товара не отменяет."""
+
+    api = FakeBitrixApi()
+    api.items[806] = {"id": "806", "stageId": "DT1134_55:CLIENT_2"}
+    case = _case(bitrix_item_id=806, assigned_user_id=131016)
+    db_session.add(case)
+    db_session.commit()
+
+    _handle_awaiting_reply_started(
+        case=case,
+        settings=_goods_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        item_id=806,
+        current_stage_id="DT1134_55:CLIENT_2",
+        now=datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+    )
+
+    assert api.items[806]["stageId"] == "DT1134_55:CLIENT_2"
+    assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
+
+
+def test_auto_close_ignores_the_waiting_for_goods_stage(db_session) -> None:
+    """В «Ожидаем товар» ждут посылку, а не клиента — закрывать нельзя."""
+
+    settings = _goods_settings(site_service_requests_auto_close_silence_days=5)
+    api = FakeBitrixApi()
+    _silent_case(
+        db_session,
+        item_id=807,
+        answered_at=datetime(2026, 9, 4, 9, 0, tzinfo=UTC),
+        stage="DT1134_55:CLIENT_2",
+        api=api,
+    )
+
+    results = auto_close_silent_site_service_requests(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=UTC),
+    )
+
+    assert results == []
+    assert api.items[807]["stageId"] == "DT1134_55:CLIENT_2"

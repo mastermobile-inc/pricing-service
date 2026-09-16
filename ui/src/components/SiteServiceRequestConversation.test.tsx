@@ -26,6 +26,38 @@ const failedMessage = {
   attachments: [],
 };
 
+function orderStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    dealId: 33485,
+    orderRef: "240315",
+    tracking: "10311127882",
+    statusText: "Вручен 26.08.2026 14:58",
+    trackingLink: "https://www.cdek.ru/ru/tracking/?order_id=10311127882",
+    plannedDeliveryDate: null,
+    storageDate: null,
+    multipleShipments: false,
+    customerMessage: "Здравствуйте! По вашему заказу №240315: Вручен 26.08.2026 14:58.",
+    ...overrides,
+  };
+}
+
+/** Раскладывает ответы мока по адресу: переписка отдельно, статус заказа отдельно. */
+function mockByUrl(options: {
+  conversations: Array<Record<string, unknown>>;
+  order?: Record<string, unknown> | null;
+}) {
+  const pages = [...options.conversations];
+  vi.mocked(api.get).mockImplementation((url: string) => {
+    if (url.endsWith("/order-status")) {
+      return options.order
+        ? Promise.resolve({ data: options.order })
+        : Promise.reject(new Error("order status is unavailable"));
+    }
+    const page = pages.length > 1 ? pages.shift() : pages[0];
+    return Promise.resolve({ data: page });
+  });
+}
+
 function conversation(overrides: Record<string, unknown> = {}) {
   return {
     itemId: 392,
@@ -128,17 +160,17 @@ describe("SiteServiceRequestConversation", () => {
       retryable: false,
       visibleToCustomer: false,
     };
-    vi.mocked(api.get)
-      .mockResolvedValueOnce({
-        data: conversation({ canReply: true, nextBeforeId: 41 }),
-      })
-      .mockResolvedValueOnce({
-        data: conversation({
+    mockByUrl({
+      conversations: [
+        conversation({ canReply: true, nextBeforeId: 41 }),
+        conversation({
           canReply: true,
           nextBeforeId: null,
           messages: [internalNote],
         }),
-      });
+      ],
+      order: null,
+    });
 
     render(<SiteServiceRequestConversation itemId={392} />);
     fireEvent.click(await screen.findByRole("button", { name: "Показать предыдущие сообщения" }));
@@ -147,11 +179,56 @@ describe("SiteServiceRequestConversation", () => {
     expect(noteText).toBeVisible();
     expect(noteText.closest("article")).toHaveTextContent("Внутренняя заметка");
     await waitFor(() =>
-      expect(api.get).toHaveBeenNthCalledWith(
-        2,
+      expect(api.get).toHaveBeenCalledWith(
         "/site-service-requests/ui/items/392/conversation",
         { params: { beforeId: 41 } },
       ),
     );
+  });
+
+  it("предлагает готовый ответ «Где заказ» со статусом доставки", async () => {
+    mockByUrl({
+      conversations: [conversation({ canReply: true })],
+      order: orderStatus(),
+    });
+
+    render(<SiteServiceRequestConversation itemId={392} />);
+
+    const select = await screen.findByLabelText("Шаблон ответа");
+    const option = await screen.findByRole("option", { name: "Где заказ — статус доставки" });
+    fireEvent.change(select, { target: { value: (option as HTMLOptionElement).value } });
+
+    expect(screen.getByPlaceholderText("Напишите ответ клиенту")).toHaveValue(
+      "Здравствуйте! По вашему заказу №240315: Вручен 26.08.2026 14:58.",
+    );
+  });
+
+  it("не подставляет общий трек, когда по заказу несколько отправлений", async () => {
+    mockByUrl({
+      conversations: [conversation({ canReply: true })],
+      order: orderStatus({ multipleShipments: true, customerMessage: "" }),
+    });
+
+    render(<SiteServiceRequestConversation itemId={392} />);
+
+    expect(
+      await screen.findByText(
+        "По заказу несколько отправлений — общий трек клиенту отправлять нельзя. Проверьте отправления в сделке.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("option", { name: "Где заказ — статус доставки" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("молчит, когда статус заказа недоступен", async () => {
+    mockByUrl({ conversations: [conversation({ canReply: true })], order: null });
+
+    render(<SiteServiceRequestConversation itemId={392} />);
+
+    expect(await screen.findByLabelText("Шаблон ответа")).toBeVisible();
+    expect(
+      screen.queryByRole("option", { name: "Где заказ — статус доставки" }),
+    ).not.toBeInTheDocument();
   });
 });

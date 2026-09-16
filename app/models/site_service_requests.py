@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -78,6 +79,16 @@ class SiteServiceRequestCase(Base):
             "ix_site_service_request_case_conversation_purge",
             "conversation_purge_after",
             "id",
+        ),
+        Index(
+            "ix_site_service_request_case_awaiting_reply",
+            "awaiting_reply_since",
+            postgresql_where=text("awaiting_reply_since IS NOT NULL"),
+        ),
+        Index(
+            "ix_site_service_request_case_auto_close",
+            "auto_close_checked_at",
+            postgresql_where=text("auto_closed_at IS NULL AND closed_without_response_at IS NULL"),
         ),
     )
 
@@ -148,6 +159,12 @@ class SiteServiceRequestCase(Base):
         DateTime(timezone=True), nullable=True
     )
     awaiting_reply_escalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Автозакрытие по молчанию клиента. Отдельно от closed_without_response_at:
+    # там ответа не было вовсе, здесь ответ дан и клиент просто не откликнулся.
+    auto_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    auto_close_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

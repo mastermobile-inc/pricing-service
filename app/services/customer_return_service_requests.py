@@ -287,6 +287,32 @@ def search_customer_return_service_requests(
     return _enrich(crm, rows[:limit], settings=settings)
 
 
+def move_service_request_stage(
+    *,
+    settings: Settings,
+    item_id: int,
+    stage_id: str,
+    client: BitrixChatClient | None = None,
+) -> None:
+    """Переводит карточку обращения на заданную стадию.
+
+    Используется, когда по обращению зарегистрировали возврат: карточка уходит
+    ждать посылку, а не ответ клиента. Readback здесь не нужен — окончательную
+    сверку делает лента воркера.
+    """
+
+    crm = _client(settings, client)
+    _call(
+        crm,
+        "crm.item.update",
+        {
+            "entityTypeId": settings.site_service_requests_bitrix_entity_type_id,
+            "id": item_id,
+            "fields": {"stageId": stage_id},
+        },
+    )
+
+
 def get_customer_return_service_request(
     *,
     settings: Settings,

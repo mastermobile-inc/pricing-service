@@ -17,11 +17,13 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.models.customer_return import CustomerReturnShipment
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestMessage,
     SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
@@ -32,6 +34,7 @@ from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     SiteServiceRequestConfigurationError,
 )
+from app.services.work_calendar import add_working_days
 
 _RETRY_DELAYS_SECONDS = (60, 120, 300, 900, 1800)
 _ORDER_NUMBER_PREFIX_RE = re.compile(r"^(?:№|N[оo]?\.?|#)\s*", re.IGNORECASE)
@@ -3460,6 +3463,345 @@ def escalate_overdue_site_service_replies(
     return results
 
 
+# Как часто лента возвращается к карточке, которую в прошлый раз закрыть не вышло
+# (например, она стоит в «В работе»). Без паузы такая карточка дёргала бы Bitrix
+# каждую минуту и вытесняла бы из пачки остальные.
+_SITE_SERVICE_AUTO_CLOSE_RECHECK_INTERVAL = timedelta(hours=1)
+
+
+def _russian_working_days(days: int) -> str:
+    """«1 рабочий день», «2 рабочих дня», «5 рабочих дней» — для текста человеку."""
+
+    tail = days % 100
+    if 11 <= tail <= 14:
+        word = "рабочих дней"
+    elif days % 10 == 1:
+        word = "рабочий день"
+    elif days % 10 in {2, 3, 4}:
+        word = "рабочих дня"
+    else:
+        word = "рабочих дней"
+    return f"{days} {word}"
+
+
+def _site_service_request_auto_close_comment(case_id: int, *, silence_days: int) -> str:
+    return (
+        f"Клиент не отвечал {_russian_working_days(silence_days)} после нашего ответа — "
+        "обращение закрыто автоматически. Если клиент напишет снова, карточка "
+        f"откроется сама. [site-service-auto-close:{case_id}]"
+    )
+
+
+def auto_close_silent_site_service_requests(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Закрывает обращения, где мы ответили, а клиент молчит N рабочих дней.
+
+    Ответ клиенту обязателен: карточкой без ответа занимается гейт первого ответа,
+    и закрывать её автоматически нельзя. Ожидание считается от последнего видимого
+    клиенту исходящего сообщения и только по рабочим дням — выходные и праздники
+    клиенту не в счёт.
+
+    Закрываем строго из стадии «Ожидаем клиента». «В работе», «Экспертиза» и
+    уже закрытые карточки не трогаем: там ждут не клиента, а нас.
+
+    Ошибка «нет календаря на такой год» гасит карточку, а не тик: лучше не
+    закрыть вовремя, чем закрыть по выдуманному сроку.
+    """
+
+    if not settings.site_service_requests_bitrix_writes_enabled:
+        return []
+    silence_days = settings.site_service_requests_auto_close_silence_days
+    if silence_days <= 0:
+        return []
+    stage_map = settings.site_service_requests_bitrix_stage_map
+    client_stage_id = str(stage_map.get("client") or "")
+    success_stage_id = str(stage_map.get("success") or "")
+    if not client_stage_id or not success_stage_id:
+        return []
+    entity_type_id = settings.site_service_requests_bitrix_entity_type_id
+    current_time = _as_utc(now or datetime.now(UTC))
+    batch_limit = _site_service_request_worker_limit(settings, limit=limit)
+    # Предфильтр по календарным дням безопасен: N рабочих дней всегда не меньше
+    # N календарных, поэтому ни одна созревшая карточка мимо не пройдёт.
+    silence_floor = current_time - timedelta(days=silence_days)
+    recheck_after = current_time - _SITE_SERVICE_AUTO_CLOSE_RECHECK_INTERVAL
+    last_outbound = (
+        select(func.max(SiteServiceRequestMessage.created_at))
+        .where(
+            SiteServiceRequestMessage.case_id == SiteServiceRequestCase.id,
+            SiteServiceRequestMessage.direction == "outbound",
+            SiteServiceRequestMessage.is_visible_to_customer.is_(True),
+        )
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(SiteServiceRequestCase, last_outbound.label("silent_since"))
+        .where(
+            SiteServiceRequestCase.bitrix_item_id.is_not(None),
+            SiteServiceRequestCase.first_response_at.is_not(None),
+            # Последнее слово за клиентом: пока он ждёт нас, закрывать нечего.
+            SiteServiceRequestCase.awaiting_reply_since.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            or_(
+                SiteServiceRequestCase.auto_close_checked_at.is_(None),
+                SiteServiceRequestCase.auto_close_checked_at <= recheck_after,
+            ),
+            last_outbound.is_not(None),
+            last_outbound <= silence_floor,
+        )
+        # Сортируем по давности молчания, а не по времени проверки: карточка,
+        # срок которой ещё не наступил, иначе вечно занимала бы начало пачки и
+        # вытесняла созревшие. Повторные проверки ограничивает фильтр выше.
+        .order_by(
+            last_outbound.asc(),
+            SiteServiceRequestCase.id,
+        )
+        .limit(batch_limit)
+    ).all()
+
+    results: list[dict[str, Any]] = []
+    for case, silent_since in rows:
+        silent_since_utc = _as_utc(silent_since)
+        case_id = case.id
+        ticket_id = case.source_ticket_id
+        try:
+            deadline = _as_utc(add_working_days(silent_since_utc, silence_days))
+        except ValueError:
+            # Календарь чинится руками, поэтому напоминаем раз в час, а не ежеминутно.
+            case.auto_close_checked_at = current_time
+            session.commit()
+            results.append(
+                {
+                    "caseId": case_id,
+                    "ticketId": ticket_id,
+                    "autoClosed": False,
+                    "silentSince": silent_since_utc.isoformat(),
+                    "errorCode": "work_calendar_year_missing",
+                }
+            )
+            continue
+        if deadline > current_time:
+            continue
+        try:
+            item = writer.get_item(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+            )
+            current_stage = _item_field_value(item, "stageId", default=_MISSING_ITEM_FIELD)
+            if (
+                not isinstance(current_stage, str)
+                or not current_stage
+                or current_stage.strip() != current_stage
+            ):
+                raise RuntimeError("bitrix_stage_readback_failed")
+            if current_stage != client_stage_id:
+                case.auto_close_checked_at = current_time
+                session.commit()
+                continue
+            readback = writer.update_item_fields(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                fields={"stageId": success_stage_id},
+            )
+            if (
+                _item_field_value(readback, "stageId", default=_MISSING_ITEM_FIELD)
+                != success_stage_id
+            ):
+                raise RuntimeError("bitrix_auto_close_readback_failed")
+        except RuntimeError as exc:
+            session.rollback()
+            results.append(
+                {
+                    "caseId": case_id,
+                    "ticketId": ticket_id,
+                    "autoClosed": False,
+                    "silentSince": silent_since_utc.isoformat(),
+                    "errorCode": str(exc),
+                }
+            )
+            continue
+        case.auto_closed_at = current_time
+        case.auto_close_checked_at = current_time
+        session.commit()
+        # Пояснение человеку пишем после коммита: отметка о закрытии уже надёжна,
+        # и сорванный комментарий не приведёт к повторному закрытию карточки.
+        try:
+            writer.add_timeline_comment(
+                entity_type_id=entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                comment=_site_service_request_auto_close_comment(
+                    case_id, silence_days=silence_days
+                ),
+            )
+        except RuntimeError:
+            pass
+        results.append(
+            {
+                "caseId": case_id,
+                "ticketId": ticket_id,
+                "autoClosed": True,
+                "silentSince": silent_since_utc.isoformat(),
+            }
+        )
+    return results
+
+
+# Возврат меняет стадию медленно, поэтому лента смотрит на свежие записи: открытые
+# и закрывшиеся за последнюю неделю. Так карточка с давно завершённым возвратом не
+# дёргает Битрикс вечно.
+_SITE_SERVICE_RETURN_STAGE_LOOKBACK = timedelta(days=7)
+
+
+def reconcile_site_service_request_return_stages(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Держит карточку в «Ожидаем товар», пока посылка едет, и выводит, когда пришла.
+
+    «Ожидаем клиента» и «ждём посылку» — разные ожидания, и смешивать их нельзя:
+    из первого автозакрытие по молчанию клиента карточку закроет, из второго —
+    нет, потому что клиент там ни при чём.
+
+    Выход из стадии делает только лента: `picked_up` приходит и из логистики
+    (`confirm_pickup`), и событием перевозчика — в API это не поймать.
+
+    Пока ключ `goods` не настроен в SITE_SERVICE_REQUESTS_BITRIX_STAGE_MAP, лента
+    ничего не делает: стадию сначала создают в портале.
+    """
+
+    if not settings.site_service_requests_bitrix_writes_enabled:
+        return []
+    stage_map = settings.site_service_requests_bitrix_stage_map or {}
+    goods_stage_id = str(stage_map.get("goods") or "").strip()
+    work_stage_id = str(stage_map.get("work") or "").strip()
+    client_stage_id = str(stage_map.get("client") or "").strip()
+    if not goods_stage_id or not work_stage_id:
+        return []
+    entity_type_id = settings.site_service_requests_bitrix_entity_type_id
+    current_time = _as_utc(now or datetime.now(UTC))
+    batch_limit = _site_service_request_worker_limit(settings, limit=limit)
+
+    shipments = session.execute(
+        select(
+            CustomerReturnShipment.service_request_item_id,
+            CustomerReturnShipment.bitrix_case_id,
+            CustomerReturnShipment.status,
+        ).where(
+            or_(
+                CustomerReturnShipment.service_request_item_id.is_not(None),
+                CustomerReturnShipment.bitrix_case_id.is_not(None),
+            ),
+            or_(
+                CustomerReturnShipment.status.not_in(_SITE_SERVICE_CLOSED_RETURN_STATUSES),
+                CustomerReturnShipment.status_changed_at
+                >= current_time - _SITE_SERVICE_RETURN_STAGE_LOOKBACK,
+            ),
+        )
+    ).all()
+
+    open_items: set[int] = set()
+    known_items: set[int] = set()
+    for service_request_item_id, bitrix_case_id, status in shipments:
+        item_ids: set[int] = set()
+        if service_request_item_id is not None:
+            item_ids.add(int(service_request_item_id))
+        if bitrix_case_id and str(bitrix_case_id).isdigit():
+            item_ids.add(int(bitrix_case_id))
+        known_items |= item_ids
+        if status not in _SITE_SERVICE_CLOSED_RETURN_STATUSES:
+            open_items |= item_ids
+    if not known_items:
+        return []
+
+    cases = session.scalars(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.bitrix_item_id.in_(sorted(known_items)),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+        )
+        .order_by(SiteServiceRequestCase.id)
+        .limit(batch_limit)
+    ).all()
+
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        item_id = int(case.bitrix_item_id)
+        waiting_for_goods = item_id in open_items
+        try:
+            item = writer.get_item(entity_type_id=entity_type_id, item_id=item_id)
+            current_stage = _item_field_value(item, "stageId", default=_MISSING_ITEM_FIELD)
+            if (
+                not isinstance(current_stage, str)
+                or not current_stage
+                or current_stage.strip() != current_stage
+            ):
+                raise RuntimeError("bitrix_stage_readback_failed")
+            if waiting_for_goods:
+                movable = {work_stage_id, client_stage_id} - {""}
+                if current_stage not in movable:
+                    continue
+                target_stage_id = goods_stage_id
+                comment = None
+            else:
+                if current_stage != goods_stage_id:
+                    continue
+                # Товар у нас — очередь наша: осмотреть и решить.
+                target_stage_id = work_stage_id
+                comment = (
+                    "Возврат завершён, товар у нас — карточка вернулась в работу. "
+                    f"[site-service-goods-arrived:{case.id}]"
+                )
+            readback = writer.update_item_fields(
+                entity_type_id=entity_type_id,
+                item_id=item_id,
+                fields={"stageId": target_stage_id},
+            )
+            if (
+                _item_field_value(readback, "stageId", default=_MISSING_ITEM_FIELD)
+                != target_stage_id
+            ):
+                raise RuntimeError("bitrix_return_stage_readback_failed")
+        except RuntimeError as exc:
+            session.rollback()
+            results.append(
+                {
+                    "caseId": case.id,
+                    "ticketId": case.source_ticket_id,
+                    "stageId": None,
+                    "errorCode": str(exc),
+                }
+            )
+            continue
+        if comment is not None:
+            _add_site_service_request_comment_once(
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                marker=f"[site-service-goods-arrived:{case.id}]",
+                comment=comment,
+            )
+        results.append(
+            {
+                "caseId": case.id,
+                "ticketId": case.source_ticket_id,
+                "stageId": target_stage_id,
+            }
+        )
+    return results
+
+
 def reconcile_site_service_request_assignments(
     session: Session,
     *,
@@ -3874,11 +4216,12 @@ def _apply_site_service_request_worker_plan(
     )
     if case is None:
         raise SiteServiceRequestPermanentError("case_not_found")
-    confirmed_outbound_reply = _confirm_site_service_request_command_readback(
+    reply_readback = _confirm_site_service_request_command_readback(
         session,
         case=case,
         payload=payload,
     )
+    confirmed_outbound_reply = reply_readback.delivered
     awaiting_started = _apply_awaiting_reply_state(
         case,
         awaiting_since=compute_awaiting_reply_since(payload, case=case),
@@ -4064,23 +4407,37 @@ def _apply_site_service_request_worker_plan(
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
 
-    if confirmed_outbound_reply and not awaiting_started:
-        _apply_stage_after_customer_reply(
-            settings=settings,
-            writer=writer,
-            item_id=item_id,
-            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
-        )
-
-    if awaiting_started:
-        _handle_awaiting_reply_started(
+    # Дубль ищем после сборки карточки: человеку полезно видеть её заполненной,
+    # с текстом обращения и ссылкой на основную.
+    duplicate_of = _detect_site_service_request_duplicate(session, case=case, settings=settings)
+    if duplicate_of is not None:
+        _close_site_service_request_as_duplicate(
             case=case,
+            primary=duplicate_of,
             settings=settings,
             writer=writer,
+            field_map=field_map,
             item_id=item_id,
-            current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
             now=now,
         )
+    else:
+        if reply_readback.substantive and not awaiting_started:
+            _apply_stage_after_customer_reply(
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+            )
+
+        if awaiting_started:
+            _handle_awaiting_reply_started(
+                case=case,
+                settings=settings,
+                writer=writer,
+                item_id=item_id,
+                current_stage_id=str(_item_field_value(readback_item, "stageId") or ""),
+                now=now,
+            )
 
     case.bitrix_item_id = item_id
     case.base_sync_status = base_sync_status
@@ -4104,6 +4461,207 @@ def _apply_site_service_request_worker_plan(
         bitrix_item_id=item_id,
         error_code=error_code,
     )
+
+
+# Возврат в этих состояниях уже завершён и работу по обращению не держит.
+_SITE_SERVICE_CLOSED_RETURN_STATUSES = ("picked_up", "onec_return_confirmed", "cancelled")
+
+
+def _site_service_request_has_open_return(
+    session: Session,
+    *,
+    case: SiteServiceRequestCase,
+) -> bool:
+    if case.bitrix_item_id is None:
+        return False
+    item_id = int(case.bitrix_item_id)
+    return (
+        session.scalar(
+            select(CustomerReturnShipment.id)
+            .where(
+                or_(
+                    CustomerReturnShipment.service_request_item_id == item_id,
+                    CustomerReturnShipment.bitrix_case_id == str(item_id),
+                ),
+                CustomerReturnShipment.status.not_in(_SITE_SERVICE_CLOSED_RETURN_STATUSES),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _detect_site_service_request_duplicate(
+    session: Session,
+    *,
+    case: SiteServiceRequestCase,
+    settings: Settings,
+) -> SiteServiceRequestCase | None:
+    """Более раннее обращение того же клиента по тому же заказу, либо ``None``.
+
+    Клиент нажимает «отправить», не дожидается подтверждения, обновляет страницу и
+    отправляет снова — в очереди появляются две одинаковые карточки. Дальше их
+    разбирают два разных человека, каждый не зная про второго.
+
+    Помечаем дублем только бесспорный случай, и каждое условие ниже — отдельная
+    страховка от ложного срабатывания:
+
+    * узкое окно по времени создания;
+    * по новой карточке ещё не отвечали и её не закрывали;
+    * по ней не заводили исходящих ответов и возвратов — значит с ней не работали;
+    * у обеих карточек **заполнен** один и тот же заказ: `NULL` не равен `NULL`;
+    * совпадает источник: письмо и тикет сайта по одному заказу — нормальная
+      ситуация, там нужен человек;
+    * основная карточка открыта, иначе клиента отправили бы в тупик.
+
+    Ошибка обратима: клиент, написавший в закрытый дубль, откроет его сам.
+    """
+
+    window = settings.site_service_requests_duplicate_window_minutes
+    if window <= 0:
+        return None
+    if case.crm_contact_id is None or case.crm_deal_id is None:
+        return None
+    if (
+        case.first_response_at is not None
+        or case.closed_without_response_at is not None
+        or case.auto_closed_at is not None
+    ):
+        return None
+    worked_on = session.scalar(
+        select(SiteServiceRequestCommand.id)
+        .where(
+            SiteServiceRequestCommand.case_id == case.id,
+            SiteServiceRequestCommand.status.in_(("pending", "leased", "applied")),
+        )
+        .limit(1)
+    )
+    if worked_on is not None:
+        return None
+    if _site_service_request_has_open_return(session, case=case):
+        return None
+    first_seen = _as_utc(case.first_seen_at)
+    return session.scalar(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.id != case.id,
+            SiteServiceRequestCase.crm_contact_id == case.crm_contact_id,
+            SiteServiceRequestCase.crm_deal_id == case.crm_deal_id,
+            SiteServiceRequestCase.source_kind == case.source_kind,
+            SiteServiceRequestCase.bitrix_item_id.is_not(None),
+            SiteServiceRequestCase.closed_without_response_at.is_(None),
+            SiteServiceRequestCase.auto_closed_at.is_(None),
+            SiteServiceRequestCase.first_seen_at >= first_seen - timedelta(minutes=window),
+            # Две карточки могут создаться в одну секунду, поэтому ничью разрывает
+            # id: дублем всегда помечается более новая.
+            or_(
+                SiteServiceRequestCase.first_seen_at < first_seen,
+                and_(
+                    SiteServiceRequestCase.first_seen_at == first_seen,
+                    SiteServiceRequestCase.id < case.id,
+                ),
+            ),
+        )
+        .order_by(
+            SiteServiceRequestCase.first_seen_at.asc(),
+            SiteServiceRequestCase.id.asc(),
+        )
+        .limit(1)
+    )
+
+
+def _close_site_service_request_as_duplicate(
+    *,
+    case: SiteServiceRequestCase,
+    primary: SiteServiceRequestCase,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    field_map: dict[str, str],
+    item_id: int,
+    now: datetime,
+) -> bool:
+    """Закрывает дубль с причиной и связывает обе карточки ссылками.
+
+    Причина закрытия — та же, что у административного закрытия: SLA первого
+    ответа по дублю перестаёт тикать, карточка выпадает из ленты назначений и
+    руководителя по ней не дёргают.
+    """
+
+    failure_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("failure") or "")
+    reason_field = str(field_map.get("close_without_response_reason") or "").strip()
+    if not failure_stage_id or not reason_field:
+        return False
+    reason_value = _site_service_request_enum_value(
+        settings, "close_without_response_reason_duplicate"
+    )
+    readback = writer.update_item_fields(
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        item_id=item_id,
+        fields={"stageId": failure_stage_id, reason_field: reason_value},
+    )
+    if (
+        str(_item_field_value(readback, "stageId") or "") != failure_stage_id
+        or str(_item_field_value(readback, reason_field) or "") != reason_value
+    ):
+        raise RuntimeError("bitrix_duplicate_close_readback_failed")
+    case.closed_without_response_at = _as_utc(now)
+    case.close_without_response_reason = "duplicate"
+
+    # Пояснения — подсказка человеку, а не состояние контура: недоступный timeline
+    # не должен откатывать уже подтверждённое закрытие и гонять событие по кругу.
+    primary_item_id = int(primary.bitrix_item_id)
+    try:
+        primary_reference = site_service_request_item_url(settings, primary_item_id)
+    except SiteServiceRequestConfigurationError:
+        # Без настроенного портала ссылку не собрать, но номер обращения человеку
+        # уже достаточно, чтобы найти основную карточку.
+        primary_reference = f"#{primary.source_ticket_id}"
+    _add_site_service_request_comment_once(
+        settings=settings,
+        writer=writer,
+        item_id=item_id,
+        marker=f"[site-service-duplicate:{case.id}]",
+        comment=(
+            f"Дубль обращения {primary_reference} — "
+            "работа ведётся в основной карточке. "
+            f"[site-service-duplicate:{case.id}]"
+        ),
+    )
+    _add_site_service_request_comment_once(
+        settings=settings,
+        writer=writer,
+        item_id=primary_item_id,
+        marker=f"[site-service-duplicate-of:{case.id}]",
+        comment=(
+            f"К этому обращению пришёл дубль #{case.source_ticket_id}, он закрыт. "
+            f"[site-service-duplicate-of:{case.id}]"
+        ),
+    )
+    return True
+
+
+def _add_site_service_request_comment_once(
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    item_id: int,
+    marker: str,
+    comment: str,
+) -> None:
+    try:
+        if writer.timeline_comment_exists(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            marker=marker,
+        ):
+            return
+        writer.add_timeline_comment(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            comment=comment,
+        )
+    except RuntimeError:
+        return
 
 
 def _apply_stage_after_customer_reply(
@@ -4209,6 +4767,38 @@ def _handle_awaiting_reply_started(
     case.awaiting_reply_notified_at = now
 
 
+# Приветствия, которые сами по себе ответом клиенту не являются. Список короткий
+# и намеренно живёт в коде, а не в .env: порог напрямую двигает срок первого
+# ответа, поэтому его правка должна проходить ревью и тесты.
+SITE_SERVICE_GREETING_PREFIXES = (
+    "здравствуйте",
+    "добрый день",
+    "доброе утро",
+    "добрый вечер",
+    "доброй ночи",
+    "приветствую",
+    "привет",
+    "hello",
+    "hi",
+)
+# Символов после снятия приветствия и имени. Порог низкий сознательно: задача —
+# отсечь сообщение, которое состоит только из приветствия, а не требовать
+# развёрнутого ответа. «Да, вернём деньги» проходит, «Добрый день, Иван!» — нет.
+SITE_SERVICE_MIN_REPLY_CHARS = 10
+
+
+def _is_substantive_support_reply(text: str | None) -> bool:
+    """Есть ли в ответе поддержки что-то, кроме приветствия."""
+
+    normalized = " ".join((text or "").split())
+    stripped = normalized.casefold().replace("ё", "е")
+    for prefix in SITE_SERVICE_GREETING_PREFIXES:
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix) :].lstrip(" ,.!?-—:")
+            break
+    return len(stripped) >= SITE_SERVICE_MIN_REPLY_CHARS
+
+
 def compute_awaiting_reply_since(
     payload: SiteServiceRequestEventPayload,
     *,
@@ -4227,6 +4817,9 @@ def compute_awaiting_reply_since(
         if (
             message.author_kind in {"support", "support-team", "support_team"}
             and message.is_visible_to_customer
+            # «Здравствуйте!» без продолжения клиенту ничего не отвечает, поэтому
+            # ожидание с него не снимается и срок ответа продолжает идти.
+            and _is_substantive_support_reply(message.text)
         ):
             created = _as_utc(message.created_at)
             if support_last is None or created > support_last:
@@ -4272,12 +4865,30 @@ def _apply_awaiting_reply_state(
     return True
 
 
+@dataclass(frozen=True)
+class SiteServiceRequestReplyReadback:
+    """Что подтвердила история переписки по исходящему ответу.
+
+    Два разных факта, которые раньше отвечали одним `True` и поэтому слипались:
+
+    * ``delivered`` — сообщение ушло клиенту. От него зависит статус «Отправлено»
+      и очистка поля «Отправить клиенту»; сюда идёт **любое** видимое сообщение,
+      иначе ответ завис бы в очереди и ушёл клиенту второй раз;
+    * ``substantive`` — в сообщении есть ответ по существу. От него зависят срок
+      первого ответа и перевод карточки в «Ожидаем клиента»: за «Здравствуйте!»
+      клиенту ждать нечего.
+    """
+
+    delivered: bool
+    substantive: bool
+
+
 def _confirm_site_service_request_command_readback(
     session: Session,
     *,
     case: SiteServiceRequestCase,
     payload: SiteServiceRequestEventPayload,
-) -> bool:
+) -> SiteServiceRequestReplyReadback:
     support_messages = {
         message.message_id: _as_utc(message.created_at)
         for message in payload.history
@@ -4286,16 +4897,24 @@ def _confirm_site_service_request_command_readback(
         and _as_utc(message.created_at) >= _as_utc(case.first_seen_at)
     }
     if not support_messages:
-        return False
-    first_support_response_at = min(support_messages.values())
-    if case.first_response_at is None or first_support_response_at < _as_utc(
-        case.first_response_at
-    ):
-        case.first_response_at = first_support_response_at
+        return SiteServiceRequestReplyReadback(delivered=False, substantive=False)
+    substantive_messages = {
+        message.message_id: _as_utc(message.created_at)
+        for message in payload.history
+        if message.message_id in support_messages and _is_substantive_support_reply(message.text)
+    }
+    if substantive_messages:
+        first_support_response_at = min(substantive_messages.values())
+        if case.first_response_at is None or first_support_response_at < _as_utc(
+            case.first_response_at
+        ):
+            case.first_response_at = first_support_response_at
     case.latest_outbound_message_id = max(
         case.latest_outbound_message_id or 0,
         max(support_messages),
     )
+    # Доставку ищем по всем видимым сообщениям: фильтр приветствий не должен
+    # оставить карточку без статуса «Отправлено» и отправить ответ повторно.
     commands = session.scalars(
         select(SiteServiceRequestCommand).where(
             SiteServiceRequestCommand.case_id == case.id,
@@ -4303,17 +4922,18 @@ def _confirm_site_service_request_command_readback(
             SiteServiceRequestCommand.source_message_id.in_(support_messages),
         )
     ).all()
+    if not commands:
+        return SiteServiceRequestReplyReadback(delivered=False, substantive=False)
     confirmed_at = [
-        support_messages[command.source_message_id]
+        substantive_messages[command.source_message_id]
         for command in commands
-        if command.source_message_id in support_messages
+        if command.source_message_id in substantive_messages
     ]
-    if not confirmed_at:
-        return False
-    first_response_at = min(confirmed_at)
-    if case.first_response_at is None or first_response_at < _as_utc(case.first_response_at):
-        case.first_response_at = first_response_at
-    return True
+    if confirmed_at:
+        first_response_at = min(confirmed_at)
+        if case.first_response_at is None or first_response_at < _as_utc(case.first_response_at):
+            case.first_response_at = first_response_at
+    return SiteServiceRequestReplyReadback(delivered=True, substantive=bool(confirmed_at))
 
 
 def _record_site_service_request_failure(
