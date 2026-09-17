@@ -2,12 +2,17 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api/client";
+import { ApiSessionExpiredError, api } from "../api/client";
+import toast from "react-hot-toast";
 import { SiteServiceRequestConversation } from "./SiteServiceRequestConversation";
 
-vi.mock("../api/client", () => ({
-  api: { get: vi.fn(), post: vi.fn() },
-}));
+vi.mock("../api/client", async () => {
+  const actual = await vi.importActual<typeof import("../api/client")>("../api/client");
+  return {
+    api: { get: vi.fn(), post: vi.fn() },
+    ApiSessionExpiredError: actual.ApiSessionExpiredError,
+  };
+});
 
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
@@ -230,5 +235,33 @@ describe("SiteServiceRequestConversation", () => {
     expect(
       screen.queryByRole("option", { name: "Где заказ — статус доставки" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("говорит обновить страницу, когда сессия вкладки истекла", async () => {
+    vi.mocked(api.get).mockRejectedValue(new ApiSessionExpiredError());
+
+    render(<SiteServiceRequestConversation itemId={392} />);
+
+    expect(
+      await screen.findByText("Сессия вкладки истекла. Обновите страницу (F5), чтобы продолжить."),
+    ).toBeVisible();
+  });
+
+  it("не выдаёт «Не удалось отправить ответ», когда сессия истекла", async () => {
+    mockByUrl({ conversations: [conversation({ canReply: true })], order: null });
+    vi.mocked(api.post).mockRejectedValue(new ApiSessionExpiredError());
+
+    render(<SiteServiceRequestConversation itemId={392} />);
+    fireEvent.change(await screen.findByPlaceholderText("Напишите ответ клиенту"), {
+      target: { value: "Заказ уже в пути" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить клиенту" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Сессия вкладки истекла. Обновите страницу (F5), чтобы продолжить.",
+      ),
+    );
+    expect(toast.error).not.toHaveBeenCalledWith("Не удалось отправить ответ");
   });
 });

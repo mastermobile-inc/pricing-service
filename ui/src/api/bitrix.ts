@@ -238,12 +238,26 @@ export function getSiteServiceRequestItemId() {
   return /^[1-9][0-9]*$/.test(value) ? Number(value) : 0;
 }
 
-export async function initializeBitrixSiteServiceRequestsSession() {
+/**
+ * Получает пропуск вкладки «Сервисные обращения».
+ *
+ * `renew` нужен, когда пропуск истёк уже на открытой вкладке: одноразовый
+ * токен запуска к тому моменту стёрт, поэтому свежий берём у Bitrix24 SDK.
+ * Отказ SDK не глушим — вызывающий покажет человеку, что надо обновить страницу.
+ */
+export async function initializeBitrixSiteServiceRequestsSession(
+  options: { renew?: boolean } = {},
+) {
   clearApiAuthToken();
-  let auth = getLaunchAuth();
+  let auth = options.renew ? null : getLaunchAuth();
   if (!auth) {
     await loadBitrixSdk();
     auth = await initBitrix();
+    if (options.renew) {
+      // Портал мог протухнуть вместе с нашей сессией, поэтому просим свежий
+      // токен. Отказ обновления не фатален: сработает то, что вернул init.
+      auth = await refreshBitrixAuth().catch(() => auth);
+    }
   }
   const itemId = getSiteServiceRequestItemId();
   const placement = window.__MM_BITRIX_LAUNCH__?.placement || "";

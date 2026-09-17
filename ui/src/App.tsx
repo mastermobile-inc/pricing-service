@@ -34,6 +34,7 @@ import {
   type BitrixReceivablesSessionResponse,
   type BitrixExecutiveDashboardSessionResponse,
 } from "./api/bitrix";
+import { setApiReauthorizer } from "./api/client";
 import type { ProductFacets, ProductRow, ProductSort } from "./api/types";
 import { useSelectedProduct } from "./store/useSelectionStore";
 
@@ -1578,6 +1579,12 @@ function SiteServiceRequestsBitrixApp() {
 
   useEffect(() => {
     let cancelled = false;
+    // Пропуск вкладки живёт 15 минут, а карточку держат открытой дольше. Без
+    // переподключения вкладка молча теряла доступ: переписка становилась пустой,
+    // а отправка ответа выдавала ошибку, хотя всё лечилось обновлением страницы.
+    setApiReauthorizer(async () => {
+      await initializeBitrixSiteServiceRequestsSession({ renew: true });
+    });
     initializeBitrixSiteServiceRequestsSession()
       .then((session) => {
         if (!cancelled) setState({ status: "ready", itemId: session.itemId });
@@ -1590,7 +1597,10 @@ function SiteServiceRequestsBitrixApp() {
           });
         }
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      setApiReauthorizer(null);
+    };
   }, []);
 
   if (state.status !== "ready") {

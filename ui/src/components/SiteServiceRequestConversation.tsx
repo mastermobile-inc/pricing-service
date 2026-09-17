@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { api } from "../api/client";
+import { ApiSessionExpiredError, api } from "../api/client";
 import "./SiteServiceRequestConversation.css";
 
 type Attachment = {
@@ -47,6 +47,9 @@ type OrderStatus = {
   multipleShipments: boolean;
   customerMessage: string;
 };
+
+const SESSION_EXPIRED_MESSAGE =
+  "Сессия вкладки истекла. Обновите страницу (F5), чтобы продолжить.";
 
 const TEMPLATES = [
   "Здравствуйте! Обращение приняли в работу. Сообщим о результате здесь.",
@@ -102,8 +105,12 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
       if (!data.canAttachFiles) setFiles([]);
       setConversation(data);
       setError("");
-    } catch {
-      setError("Не удалось загрузить переписку. Попробуйте ещё раз.");
+    } catch (loadError: unknown) {
+      setError(
+        loadError instanceof ApiSessionExpiredError
+          ? SESSION_EXPIRED_MESSAGE
+          : "Не удалось загрузить переписку. Попробуйте ещё раз.",
+      );
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -185,6 +192,13 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
       );
       toast.success(mode === "note" ? "Заметка сохранена" : "Ответ поставлен в отправку");
     } catch (requestError: unknown) {
+      if (requestError instanceof ApiSessionExpiredError) {
+        // Иначе человек видит «Не удалось отправить ответ» и жмёт кнопку снова и
+        // снова, хотя отправка исправна и всё лечится обновлением страницы.
+        setError(SESSION_EXPIRED_MESSAGE);
+        toast.error(SESSION_EXPIRED_MESSAGE);
+        return;
+      }
       const status = (
         requestError as { response?: { status?: number } }
       )?.response?.status;
@@ -205,8 +219,12 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
       );
       await load(true);
       toast.success("Повторная отправка запущена");
-    } catch {
-      toast.error("Не удалось повторить отправку");
+    } catch (retryError: unknown) {
+      toast.error(
+        retryError instanceof ApiSessionExpiredError
+          ? SESSION_EXPIRED_MESSAGE
+          : "Не удалось повторить отправку",
+      );
     } finally {
       setBusy(false);
     }
