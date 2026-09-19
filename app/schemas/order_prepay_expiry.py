@@ -21,10 +21,20 @@ class PaymentAvailabilityEvent(BaseModel):
 class PaymentAvailabilityClock(BaseModel):
     model_config = ConfigDict(extra="forbid")
     policy: Literal["web_prepay_72h_v2"]
+    source: Literal["site_gate_v1"] | None = None
+    valid_until: AwareDatetime | None = None
     enrollment_id: UUID
     # Enrollment is emitted by creation of a NEW order after rollout.
     enrolled_at: AwareDatetime
     events: list[PaymentAvailabilityEvent] = Field(min_length=1, max_length=512)
+
+
+class PaymentClosureHold(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    batch_id: UUID
+    frozen_at: AwareDatetime
+    clock_revision: int = Field(ge=1, strict=True)
 
 
 class SitePrepaySnapshot(BaseModel):
@@ -34,6 +44,8 @@ class SitePrepaySnapshot(BaseModel):
 
     site_order_id: str = Field(pattern=r"^[1-9][0-9]{0,11}$")
     payment_clock: PaymentAvailabilityClock | None = None
+    closure_hold: PaymentClosureHold | None = None
+    payment_started: StrictBool = False
     created_at: AwareDatetime
     observed_at: AwareDatetime
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
@@ -58,7 +70,7 @@ class PrepayTickRequest(BaseModel):
 class PrepayWorkItem(BaseModel):
     batch_id: str
     site_order_id: str
-    action: Literal["refresh", "cancel_site", "manual_review", "complete"]
+    action: Literal["refresh", "prepare_closure", "cancel_site", "manual_review", "complete"]
     closure_document_ref: str | None = None
     closure_document_number: str | None = None
     reason: str | None = None

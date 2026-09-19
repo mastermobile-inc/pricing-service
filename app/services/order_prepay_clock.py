@@ -29,6 +29,10 @@ def read_clock(snapshot: SitePrepaySnapshot) -> PaymentClockReading:
     clock = snapshot.payment_clock
     if clock is None:
         raise PaymentClockError("payment_clock_missing")
+    if clock.source != "site_gate_v1":
+        raise PaymentClockError("payment_clock_source_unproven")
+    if clock.valid_until and clock.valid_until > snapshot.observed_at + timedelta(seconds=120):
+        raise PaymentClockError("payment_clock_lease_too_long")
     if not snapshot.created_at <= clock.enrolled_at <= snapshot.observed_at:
         raise PaymentClockError("payment_clock_enrollment_invalid")
     available = False
@@ -52,7 +56,10 @@ def read_clock(snapshot: SitePrepaySnapshot) -> PaymentClockReading:
         previous_at = event.occurred_at
         ids.add(event.event_id)
     if available:
-        elapsed += snapshot.observed_at - previous_at
+        if clock.valid_until is None or clock.valid_until < previous_at:
+            raise PaymentClockError("payment_clock_lease_missing")
+        elapsed += min(snapshot.observed_at, clock.valid_until) - previous_at
+        available = snapshot.observed_at < clock.valid_until
     if first_opened is None:
         raise PaymentClockError("payment_clock_missing_opening")
     return PaymentClockReading(elapsed, first_opened, available, len(clock.events))
@@ -63,6 +70,12 @@ def check_extension(original: SitePrepaySnapshot, current: SitePrepaySnapshot) -
     before, after = original.payment_clock, current.payment_clock
     if before is None or after is None:
         raise PaymentClockError("payment_clock_missing")
+    if original.closure_hold is not None and current.closure_hold != original.closure_hold:
+        raise PaymentClockError("payment_closure_hold_changed")
+    if before.source != after.source:
+        raise PaymentClockError("payment_clock_source_changed")
+    if before.valid_until and after.valid_until and after.valid_until < before.valid_until:
+        raise PaymentClockError("payment_clock_lease_reversed")
     if (before.enrollment_id, before.enrolled_at) != (after.enrollment_id, after.enrolled_at):
         raise PaymentClockError("payment_clock_identity_changed")
     if current.observed_at < original.observed_at:

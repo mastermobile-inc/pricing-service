@@ -20,6 +20,8 @@ NOW = datetime(2026, 9, 7, 12, tzinfo=UTC)
 def clock(*transitions):
     return dict(
         policy="web_prepay_72h_v2",
+        source="site_gate_v1",
+        valid_until=NOW + timedelta(seconds=120),
         enrollment_id=UUID(int=1),
         enrolled_at=NOW - timedelta(days=10),
         events=[
@@ -51,6 +53,17 @@ def snapshot(**changes):
     )
     data.update(changes)
     return SitePrepaySnapshot(**data)
+
+
+def prepared_snapshot(**changes):
+    data = dict(
+        payment_clock=clock((NOW - timedelta(hours=73), True), (NOW, False)),
+        closure_hold=dict(
+            id=UUID(int=99), batch_id=policy.batch_id("245000"), frozen_at=NOW, clock_revision=2
+        ),
+    )
+    data.update(changes)
+    return snapshot(**data)
 
 
 @pytest.fixture
@@ -109,8 +122,8 @@ def test_naive_clock_and_missing_facts_are_not_defaulted():
 
 
 def test_repeated_discovery_has_one_stable_batch(db):
-    first = policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
-    second = policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    first = policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
+    second = policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     assert first.batch_id == second.batch_id
     assert len(db.scalars(select(OrderClosureBatch)).all()) == 1
     assert len(policy.pending_work(db)) == 1
@@ -122,7 +135,7 @@ def test_repeated_discovery_has_one_stable_batch(db):
 
 
 def test_auto_and_manual_apply_gates_are_independent(db):
-    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     b = db.scalar(select(OrderClosureBatch))
     b.status = "approved"
     b.command_kind = "apply"
@@ -141,7 +154,7 @@ def test_observation_cannot_mark_unapplied_order_complete(db):
 def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
     from app.schemas.order_closure import OrderClosureCommandAckRequest
 
-    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     b = db.scalar(select(OrderClosureBatch))
     queue.lease_commands(db, allow_apply=False, now=NOW)
     item = dict(
@@ -175,9 +188,9 @@ def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
         ),
         now=NOW,
     )
-    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     assert b.status == "diagnosed"
-    policy.observe(db, snapshot(), apply_enabled=True, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW)
     assert b.status == "approved" and b.actor_id == policy.ACTOR
     assert policy.pending_work(db)[0].action == "refresh"
     queue.lease_commands(db, allow_apply=False, allow_auto_apply=True, now=NOW)
@@ -196,7 +209,7 @@ def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
     queue.acknowledge_command(db, batch=b, payload=ack, now=NOW)
     assert policy.pending_work(db)[0].action == "cancel_site"
     assert queue.acknowledge_command(db, batch=b, payload=ack, now=NOW)[1] is True
-    policy.observe(db, snapshot(canceled=True, status="D"), apply_enabled=True, now=NOW)
+    policy.observe(db, prepared_snapshot(canceled=True, status="D"), apply_enabled=True, now=NOW)
     assert policy.pending_work(db) == []
     assert len(db.scalars(select(OrderClosureBatch)).all()) == 1
 
@@ -238,7 +251,7 @@ def test_command_endpoint_requires_all_automatic_gates(
 
     from app.api import order_closure as api
 
-    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     batch = db.scalar(select(OrderClosureBatch))
     batch.status = "approved"
     batch.command_kind = "apply"
@@ -375,7 +388,8 @@ def test_pause_revokes_pending_approval_and_resume_requests_new_diagnosis(db):
     policy.observe(
         db, snapshot(payment_clock=resumed, observed_at=later), apply_enabled=True, now=later
     )
-    assert b.status == "draft" and b.command_kind == "diagnose"
+    assert b.status == "draft" and b.command_kind is None
+    assert policy.pending_work(db)[0].action == "prepare_closure"
     assert b.diagnosis_hash is None
 
 
@@ -389,14 +403,97 @@ def test_expired_site_observation_is_checked_again_at_apply_leasing(db):
 
 
 def test_conflict_during_a_live_lease_requires_manual_review_even_after_receipt(db):
-    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    policy.observe(db, prepared_snapshot(), apply_enabled=False, now=NOW)
     b = db.scalar(select(OrderClosureBatch))
     b.status = "approved"
     b.command_kind = "apply"
     queue.lease_commands(db, allow_auto_apply=True, now=NOW)
-    result = policy.observe(db, snapshot(has_payment_history=True), apply_enabled=True, now=NOW)
+    result = policy.observe(
+        db, prepared_snapshot(has_payment_history=True), apply_enabled=True, now=NOW
+    )
     assert result.action == "manual_review" and b.status == "leased"
     assert b.source_payload["requires_manual_review"]
     b.status = "applied"  # an in-flight native operation may have completed
-    assert policy.observe(db, snapshot(), apply_enabled=True, now=NOW).action == "manual_review"
+    assert (
+        policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW).action
+        == "manual_review"
+    )
     assert policy.pending_work(db) == []
+
+
+def test_discovery_waits_for_durable_site_fence(db):
+    work = policy.observe(db, snapshot(), apply_enabled=True, now=NOW)
+    assert work.action == "prepare_closure"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
+    policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW)
+    batch = db.scalar(select(OrderClosureBatch))
+    assert batch.command_kind == "diagnose"
+    xml = ElementTree.fromstring(queue.render_commands_xml([batch]))
+    assert xml.findtext("command/order/payment_available") == "0"
+    assert xml.findtext("command/order/payment_closure_hold_id") == str(UUID(int=99))
+
+
+def test_unobserved_gap_cannot_extend_an_expired_site_grant():
+    from app.services.order_prepay_clock import read_clock
+
+    c = clock((NOW - timedelta(hours=73), True))
+    c["valid_until"] = NOW - timedelta(hours=73) + timedelta(seconds=120)
+    s = snapshot(payment_clock=c)
+    assert read_clock(s).elapsed == timedelta(seconds=120)
+    assert policy.site_blocker(s, NOW) == "payment_clock_paused"
+
+
+def test_legacy_observations_are_not_authoritative_grants():
+    c = clock((NOW - timedelta(hours=73), True))
+    c.pop("source")
+    assert policy.site_blocker(snapshot(payment_clock=c), NOW) == "payment_clock_source_unproven"
+
+
+def test_started_payment_blocks_before_and_after_freeze(db):
+    policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW)
+    batch = db.scalar(select(OrderClosureBatch))
+    batch.status = "approved"
+    batch.command_kind = "apply"
+    result = policy.observe(
+        db, prepared_snapshot(payment_started=True), apply_enabled=True, now=NOW
+    )
+    assert result.action == "manual_review"
+    assert batch.last_error_code == "payment_in_flight_or_unresolved"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
+
+
+def test_hold_cannot_be_released_or_replaced_during_lease(db):
+    policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW)
+    batch = db.scalar(select(OrderClosureBatch))
+    batch.status = "approved"
+    batch.command_kind = "apply"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == [batch]
+    result = policy.observe(db, prepared_snapshot(closure_hold=None), apply_enabled=True, now=NOW)
+    assert result.action == "manual_review"
+    assert batch.last_error_code == "payment_closure_hold_changed"
+
+
+def test_approval_without_hold_cannot_be_applied_even_if_flags_enabled(db):
+    policy.observe(db, snapshot(), apply_enabled=True, now=NOW)
+    batch = db.scalar(select(OrderClosureBatch))
+    batch.status = "approved"
+    batch.command_kind = "apply"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
+    assert batch.last_error_code == "payment_closure_hold_missing"
+
+
+def test_site_cannot_grant_an_unbounded_future_interval():
+    c = clock((NOW - timedelta(hours=73), True))
+    c["valid_until"] = NOW + timedelta(seconds=121)
+    assert policy.site_blocker(snapshot(payment_clock=c), NOW) == "payment_clock_lease_too_long"
+
+
+def test_payment_conflict_after_native_receipt_stops_site_cancellation(db):
+    policy.observe(db, prepared_snapshot(), apply_enabled=True, now=NOW)
+    batch = db.scalar(select(OrderClosureBatch))
+    batch.status = "applied"
+    result = policy.observe(
+        db, prepared_snapshot(has_payment_history=True), apply_enabled=True, now=NOW
+    )
+    assert result.action == "manual_review"
+    assert batch.last_error_code == "has_payment"
