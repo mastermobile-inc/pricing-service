@@ -13177,6 +13177,564 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/table:
+    get:
+      tags:
+      - procurement-pricing
+      summary: Table
+      operationId: table_api_procurement_order_formation_pricing_table_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Start
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: End
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 200
+          default: ''
+          title: Search
+      - name: subject
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Subject
+      - name: brand
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Brand
+      - name: quality
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Quality
+      - name: profitability_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Min
+      - name: profitability_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Max
+      - name: defect_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Min
+      - name: defect_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Max
+      - name: trend
+        in: query
+        required: false
+        schema:
+          enum:
+          - all
+          - up
+          - down
+          type: string
+          default: all
+          title: Trend
+      - name: sort
+        in: query
+        required: false
+        schema:
+          enum:
+          - name
+          - bronze
+          - platinum
+          - sales_qty
+          - sales_amount
+          - profitability
+          - defect_pct
+          - dynamics_pct
+          - forecast_qty
+          - forecast_amount
+          - previous_year_qty
+          - previous_year_amount
+          type: string
+          default: name
+          title: Sort
+      - name: descending
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Descending
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingTable'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/history/{code}:
+    get:
+      tags:
+      - procurement-pricing
+      summary: History
+      operationId: history_api_procurement_order_formation_pricing_history__code__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Code
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Start
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: End
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PriceHistoryPoint'
+                title: Response History Api Procurement Order Formation Pricing History  Code  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/export:
+    get:
+      tags:
+      - procurement-pricing
+      summary: Export
+      operationId: export_api_procurement_order_formation_pricing_export_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Start
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: End
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 200
+          default: ''
+          title: Search
+      - name: subject
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Subject
+      - name: brand
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Brand
+      - name: quality
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+          default: ''
+          title: Quality
+      - name: profitability_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Min
+      - name: profitability_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Max
+      - name: defect_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Min
+      - name: defect_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Max
+      - name: trend
+        in: query
+        required: false
+        schema:
+          enum:
+          - all
+          - up
+          - down
+          type: string
+          default: all
+          title: Trend
+      - name: sort
+        in: query
+        required: false
+        schema:
+          enum:
+          - name
+          - bronze
+          - platinum
+          - sales_qty
+          - sales_amount
+          - profitability
+          - defect_pct
+          - dynamics_pct
+          - forecast_qty
+          - forecast_amount
+          - previous_year_qty
+          - previous_year_amount
+          type: string
+          default: name
+          title: Sort
+      - name: descending
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Descending
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - csv
+          - xlsx
+          type: string
+          default: xlsx
+          title: Format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/batches:
+    get:
+      tags:
+      - procurement-pricing
+      summary: Batches
+      operationId: batches_api_procurement_order_formation_pricing_batches_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/PriceBatchRead'
+                type: array
+                title: Response Batches Api Procurement Order Formation Pricing Batches Get
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - procurement-pricing
+      summary: Create
+      operationId: create_api_procurement_order_formation_pricing_batches_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceBatchCreate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceBatchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/pricing/batches/{batch_id}:
+    get:
+      tags:
+      - procurement-pricing
+      summary: Read
+      operationId: read_api_procurement_order_formation_pricing_batches__batch_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceBatchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/batches/{batch_id}/approve:
+    post:
+      tags:
+      - procurement-pricing
+      summary: Approve
+      operationId: approve_api_procurement_order_formation_pricing_batches__batch_id__approve_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Batch Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceApproval'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceBatchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/pricing/presets:
+    get:
+      tags:
+      - procurement-pricing
+      summary: Presets
+      operationId: presets_api_procurement_order_formation_pricing_presets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/PricePresetRead'
+                type: array
+                title: Response Presets Api Procurement Order Formation Pricing Presets Get
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - procurement-pricing
+      summary: Save Preset
+      operationId: save_preset_api_procurement_order_formation_pricing_presets_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricePresetWrite'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricePresetRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/pricing/presets/{preset_id}:
+    delete:
+      tags:
+      - procurement-pricing
+      summary: Delete Preset
+      operationId: delete_preset_api_procurement_order_formation_pricing_presets__preset_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: preset_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Preset Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AcceptSafePropertyValueSuggestionsRequest:
@@ -16732,6 +17290,36 @@ components:
       - raw_value
       - normalized_key
       title: CompatibilityUnresolvedItem
+    CompetitorOffer:
+      properties:
+        name:
+          type: string
+          title: Name
+        price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Price
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        collected_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Collected At
+      type: object
+      required:
+      - name
+      - price
+      title: CompetitorOffer
     CounterpartyDuplicateAckRequest:
       properties:
         external_case_id:
@@ -28708,6 +29296,155 @@ components:
       - apply_enabled
       - items
       title: PrepayWorkResponse
+    PriceApproval:
+      properties:
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+      type: object
+      required:
+      - version
+      title: PriceApproval
+    PriceBatchCreate:
+      properties:
+        request_key:
+          type: string
+          format: uuid
+          title: Request Key
+        lines:
+          items:
+            $ref: '#/components/schemas/PriceChange-Input'
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Lines
+      type: object
+      required:
+      - request_key
+      - lines
+      title: PriceBatchCreate
+    PriceBatchRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        owner:
+          type: string
+          title: Owner
+        status:
+          type: string
+          title: Status
+        version:
+          type: integer
+          title: Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        approved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Approved At
+        document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Number
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        lines:
+          items:
+            $ref: '#/components/schemas/PriceChange-Output'
+          type: array
+          title: Lines
+      type: object
+      required:
+      - id
+      - owner
+      - status
+      - version
+      - created_at
+      - lines
+      title: PriceBatchRead
+    PriceChange-Input:
+      properties:
+        code:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Code
+        price_type:
+          type: string
+          enum:
+          - bronze
+          - platinum
+          title: Price Type
+        old_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          - type: 'null'
+          title: Old Price
+        new_price:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: New Price
+        currency:
+          type: string
+          const: RUB
+          title: Currency
+          default: RUB
+      type: object
+      required:
+      - code
+      - price_type
+      - new_price
+      title: PriceChange
+    PriceChange-Output:
+      properties:
+        code:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Code
+        price_type:
+          type: string
+          enum:
+          - bronze
+          - platinum
+          title: Price Type
+        old_price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          - type: 'null'
+          title: Old Price
+        new_price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: New Price
+        currency:
+          type: string
+          const: RUB
+          title: Currency
+          default: RUB
+      type: object
+      required:
+      - code
+      - price_type
+      - new_price
+      title: PriceChange
     PriceChangeItem:
       properties:
         article:
@@ -28738,6 +29475,438 @@ components:
       - delta
       - reasons
       title: PriceChangeItem
+    PriceHistoryPoint:
+      properties:
+        date:
+          type: string
+          format: date-time
+          title: Date
+        price_type:
+          type: string
+          enum:
+          - bronze
+          - platinum
+          title: Price Type
+        price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Price
+        currency:
+          type: string
+          title: Currency
+      type: object
+      required:
+      - date
+      - price_type
+      - price
+      - currency
+      title: PriceHistoryPoint
+    PricePresetRead:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+        filters:
+          $ref: '#/components/schemas/PricingFilter-Output'
+        id:
+          type: integer
+          title: Id
+      type: object
+      required:
+      - name
+      - filters
+      - id
+      title: PricePresetRead
+    PricePresetWrite:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+        filters:
+          $ref: '#/components/schemas/PricingFilter-Input'
+      type: object
+      required:
+      - name
+      - filters
+      title: PricePresetWrite
+    PricingFilter-Input:
+      properties:
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        search:
+          type: string
+          maxLength: 200
+          title: Search
+          default: ''
+        subject:
+          type: string
+          maxLength: 100
+          title: Subject
+          default: ''
+        brand:
+          type: string
+          maxLength: 100
+          title: Brand
+          default: ''
+        quality:
+          type: string
+          maxLength: 100
+          title: Quality
+          default: ''
+        profitability_min:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Min
+        profitability_max:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Max
+        defect_min:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Min
+        defect_max:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Max
+        trend:
+          type: string
+          enum:
+          - all
+          - up
+          - down
+          title: Trend
+          default: all
+        sort:
+          type: string
+          enum:
+          - name
+          - bronze
+          - platinum
+          - sales_qty
+          - sales_amount
+          - profitability
+          - defect_pct
+          - dynamics_pct
+          - forecast_qty
+          - forecast_amount
+          - previous_year_qty
+          - previous_year_amount
+          title: Sort
+          default: name
+        descending:
+          type: boolean
+          title: Descending
+          default: false
+        offset:
+          type: integer
+          minimum: 0.0
+          title: Offset
+          default: 0
+        limit:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Limit
+          default: 50
+      type: object
+      required:
+      - start
+      - end
+      title: PricingFilter
+    PricingFilter-Output:
+      properties:
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        search:
+          type: string
+          maxLength: 200
+          title: Search
+          default: ''
+        subject:
+          type: string
+          maxLength: 100
+          title: Subject
+          default: ''
+        brand:
+          type: string
+          maxLength: 100
+          title: Brand
+          default: ''
+        quality:
+          type: string
+          maxLength: 100
+          title: Quality
+          default: ''
+        profitability_min:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Min
+        profitability_max:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Max
+        defect_min:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Min
+        defect_max:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Max
+        trend:
+          type: string
+          enum:
+          - all
+          - up
+          - down
+          title: Trend
+          default: all
+        sort:
+          type: string
+          enum:
+          - name
+          - bronze
+          - platinum
+          - sales_qty
+          - sales_amount
+          - profitability
+          - defect_pct
+          - dynamics_pct
+          - forecast_qty
+          - forecast_amount
+          - previous_year_qty
+          - previous_year_amount
+          title: Sort
+          default: name
+        descending:
+          type: boolean
+          title: Descending
+          default: false
+        offset:
+          type: integer
+          minimum: 0.0
+          title: Offset
+          default: 0
+        limit:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Limit
+          default: 50
+      type: object
+      required:
+      - start
+      - end
+      title: PricingFilter
+    PricingRow:
+      properties:
+        code:
+          type: string
+          title: Code
+        name:
+          type: string
+          title: Name
+        subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Subject
+        brand:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brand
+        quality:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Quality
+        bronze:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Bronze
+        platinum:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Platinum
+        currency:
+          type: string
+          title: Currency
+          default: RUB
+        sales_qty:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty
+        sales_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Amount
+        profitability:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability
+        defect_qty:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Qty
+        defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Pct
+        dynamics_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Dynamics Pct
+        forecast_qty:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Forecast Qty
+        forecast_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Forecast Amount
+        previous_year_qty:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Previous Year Qty
+        previous_year_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Previous Year Amount
+        forecast_status:
+          type: string
+          title: Forecast Status
+          default: history_missing
+        competitors:
+          items:
+            $ref: '#/components/schemas/CompetitorOffer'
+          type: array
+          title: Competitors
+      type: object
+      required:
+      - code
+      - name
+      title: PricingRow
+    PricingTable:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/PricingRow'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        facts_through:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Facts Through
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        subjects:
+          items:
+            type: string
+          type: array
+          title: Subjects
+        brands:
+          items:
+            type: string
+          type: array
+          title: Brands
+        qualities:
+          items:
+            type: string
+          type: array
+          title: Qualities
+      type: object
+      required:
+      - items
+      - total
+      - start
+      - end
+      - observed_at
+      - facts_through
+      title: PricingTable
     ProcurementAssortmentDecision:
       properties:
         item_id:

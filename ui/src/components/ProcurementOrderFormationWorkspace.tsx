@@ -34,6 +34,7 @@ import {
 } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementFamilyReview } from "./ProcurementFamilyReview";
+import { ProcurementPricing } from "./ProcurementPricing";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
 import { ProcurementExceptions, ProcurementControlOverview } from "./ProcurementExceptions";
@@ -43,7 +44,7 @@ interface Props {
   bitrixItemId?: string;
 }
 
-type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "history" | "exceptions";
+type WorkspaceTab = "pricing" | "dashboard" | "assistant" | "orders" | "properties" | "history" | "exceptions";
 const LIFECYCLE_READINESS = ["all", "ready", "review", "blocked", "stale"] as const;
 type LifecycleReadiness = (typeof LIFECYCLE_READINESS)[number];
 
@@ -118,6 +119,7 @@ type WorkspaceRoute =
   | { kind: "review"; nomenclatureCode: string };
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
+  pricing: "Ценообразование",
   dashboard: "Витрина",
   assistant: "Помощник",
   orders: "Заказы",
@@ -376,6 +378,7 @@ function routeFromLocation(): WorkspaceRoute {
   if (reviewMatch) {
     return { kind: "review", nomenclatureCode: decodeURIComponent(reviewMatch[1]) };
   }
+  if (relative === "/pricing") return { kind: "tab", tab: "pricing" };
   if (relative === "/assistant") return { kind: "tab", tab: "assistant" };
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
@@ -1969,6 +1972,7 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
       {route.tab === "assistant" && <ProcurementOrderAssistant onOpenOrder={(orderId, focusLineId) => navigate({ kind: "order", orderId, focusLineId })} />}
       {route.tab === "properties" && <ClassificationQueue />}
+      {route.tab === "pricing" && <ProcurementPricing />}
       {route.tab === "history" && <EventHistory />}
     </AppShell>
   );
