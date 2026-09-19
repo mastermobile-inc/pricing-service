@@ -29,7 +29,18 @@ def site_blocker(
         clock = read_clock(snapshot)
     except PaymentClockError as exc:
         return str(exc)
-    if not clock.available and not canceled:
+    hold = snapshot.closure_hold
+    if hold is not None and (
+        str(hold.batch_id) != batch_id(snapshot.site_order_id)
+        or hold.clock_revision != clock.revision
+        or hold.frozen_at != snapshot.payment_clock.events[-1].occurred_at
+        or hold.frozen_at > snapshot.observed_at
+        or snapshot.payment_clock.events[-1].available
+    ):
+        return "payment_closure_hold_invalid"
+    if snapshot.payment_started:
+        return "payment_in_flight_or_unresolved"
+    if not clock.available and not canceled and hold is None:
         return "payment_clock_paused"
     if clock.elapsed <= MIN_AGE:
         return "prepayment_not_expired"
@@ -67,6 +78,7 @@ def command_evidence(snapshot: SitePrepaySnapshot) -> dict[str, str]:
         "payment_clock_id": str(snapshot.payment_clock.enrollment_id),
         "payment_clock_revision": str(clock.revision),
         "payment_available": "1" if clock.available else "0",
+        "payment_closure_hold_id": str(snapshot.closure_hold.id) if snapshot.closure_hold else "",
         "payment_elapsed_seconds": str(int(clock.elapsed.total_seconds())),
         "payment_first_opened_msk": clock.first_opened_at.astimezone(moscow).strftime(
             "%Y%m%d%H%M%S"
@@ -92,6 +104,8 @@ def _work(batch):
         action = "manual_review"
     elif batch.status == "applied":
         action = "cancel_site"
+    elif not batch.source_payload["site_snapshot"].get("closure_hold"):
+        action = "prepare_closure"
     else:
         action = "refresh"
     return PrepayWorkItem(
@@ -175,7 +189,20 @@ def observe(session, snapshot: SitePrepaySnapshot, *, apply_enabled: bool, now: 
             return _work(batch)
         if batch.status == "applied":
             # The site collector retries native cancellation only after this receipt.
-            if site_blocker(snapshot, now, canceled=True) is None:
+            completion_blocker = site_blocker(snapshot, now, canceled=True)
+            if completion_blocker in {
+                "has_payment",
+                "has_shipment",
+                "payment_in_flight_or_unresolved",
+                "payment_identity_mismatch",
+                "site_state_conflict",
+                "payment_closure_hold_invalid",
+            }:
+                batch.source_payload = {**batch.source_payload, "requires_manual_review": True}
+                batch.last_error_code = completion_blocker
+                queue._event(session, batch, "automatic_completion_conflict", ACTOR)
+                session.flush()
+            elif completion_blocker is None:
                 batch.source_payload = {**batch.source_payload, "site_canceled": True}
                 queue._event(session, batch, "site_cancellation_verified", ACTOR)
                 session.flush()
@@ -227,7 +254,7 @@ def observe(session, snapshot: SitePrepaySnapshot, *, apply_enabled: bool, now: 
             actor_id=ACTOR,
             actor_name="Автоматическое закрытие предоплаты через 72 часа",
             status="draft",
-            command_kind="diagnose",
+            command_kind=None,
             command_requested_at=now,
             created_at=now,
             updated_at=now,
@@ -255,6 +282,9 @@ def observe(session, snapshot: SitePrepaySnapshot, *, apply_enabled: bool, now: 
             "site_snapshot": snapshot.model_dump(mode="json"),
         }
     batch.updated_at = now
+    if snapshot.closure_hold is None:
+        session.flush()
+        return _work(batch)
     if revision_changed or (batch.status == "draft" and batch.command_kind is None):
         # A pause/resume changes the native diagnosis hash. Obtain a fresh one
         # before confirming, while retaining the same accumulated clock.

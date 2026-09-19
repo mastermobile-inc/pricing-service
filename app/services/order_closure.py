@@ -343,6 +343,8 @@ def lease_commands(
 
             snapshot = SitePrepaySnapshot.model_validate(batch.source_payload["site_snapshot"])
             blocker = site_blocker(snapshot, lease_at)
+            if snapshot.closure_hold is None:
+                blocker = blocker or "payment_closure_hold_missing"
             if blocker:
                 batch.status = "stale"
                 batch.command_kind = None
