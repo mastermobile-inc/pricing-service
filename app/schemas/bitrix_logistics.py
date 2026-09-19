@@ -9,6 +9,7 @@ from app.schemas.logistics import (
     LogisticsUserProfile,
     LogisticsWarehouseResponse,
 )
+from app.schemas.logistics_accounting import PackageReceiptInput
 
 
 class BitrixLogisticsSessionRequest(BaseModel):
@@ -49,6 +50,7 @@ class BitrixLogisticsDraftScanRequest(BaseModel):
 class BitrixLogisticsDraftConfirmRequest(BaseModel):
     comment: str | None = None
     idempotency_key: str | None = None
+    receipts: list[PackageReceiptInput] = Field(default_factory=list)
 
 
 class BitrixLogisticsFallbackLinkResponse(BaseModel):

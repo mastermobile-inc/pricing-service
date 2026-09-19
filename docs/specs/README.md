@@ -31,3 +31,5 @@ validator; его успешный запуск сам по себе не под
 
 - 2026-09-05 — пилот 6B: lifecycle связан с workspace canonical owner; штатная
   локальная команда проекта включает проверку фаз и evidence.
+
+- [№4065 — Procurement Pricing Dashboard 4065](procurement-pricing-4065.md).

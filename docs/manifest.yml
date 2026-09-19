@@ -894,9 +894,9 @@ documents:
     owner: engineering
     source_of_truth: true
     related_code: [app/api/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, app/schemas/logistics.py, app/models/logistics_order_plan.py, tasks/sync_logistics_order_transfers_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, infra/cron/logistics_order_transfer_sync.sh, infra/cron/logistics_rtu_sync.sh, app/api/order_fulfillment.py, app/schemas/order_fulfillment_quote.py, app/services/order_fulfillment_quote.py, scripts/run_order_fulfillment_demo.py]
-    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_order_plan_migration.py, tests/test_logistics_rtu_cron.py, tests/test_order_fulfillment_quote.py]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_scan_accounting.py, tests/test_logistics_onec.py, tests/test_logistics_order_plan_migration.py, tests/test_logistics_rtu_cron.py, tests/test_order_fulfillment_quote.py]
     keywords: [logistics, 1c, rtu, site-orders, local-pickup, order-transfer-v1, carrier-confirmation, ready-for-pickup, contract, fulfillment-quote, task-46, task-3520]
-    updated_at: '2026-09-13'
+    updated_at: '2026-09-19'
   - path: docs/IntegrationContract.OrderAssemblyQueue1C.md
     title: CRM to 1C Order Assembly Queue Integration Contract
     doc_type: integration_contract
@@ -1087,3 +1087,14 @@ documents:
     related_code: [app/services/sku.py]
     related_tests: [tests/test_sku.py, tests/test_generate_product_skus_task.py]
     keywords: [sku, policy, nomenclature]
+
+  - path: docs/specs/procurement-pricing-4065.md
+    title: Procurement Pricing Dashboard 4065
+    doc_type: spec
+    domain: procurement
+    status: review
+    owner: engineering
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [4065, procurement, pricing, bronze, platinum, connector]

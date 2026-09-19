@@ -7023,6 +7023,65 @@ paths:
                 $ref: '#/components/schemas/CardBalanceCashboxSyncResponse'
       security:
       - HTTPBearer: []
+  /api/logistics/accounting/events:
+    get:
+      summary: Accounting Events
+      operationId: accounting_events_api_logistics_accounting_events_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/accounting/events/{event_id}/ack:
+    post:
+      summary: Acknowledge Accounting
+      operationId: acknowledge_accounting_api_logistics_accounting_events__event_id__ack_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountingAck'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/auth/telegram:
     post:
       summary: Auth Telegram
@@ -10813,6 +10872,30 @@ components:
       - created_count
       - skipped_count
       title: AcceptSafePropertyValueSuggestionsResponse
+    AccountingAck:
+      properties:
+        status:
+          type: string
+          enum:
+          - applied
+          - error
+          title: Status
+        documents:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          title: Documents
+        error:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - status
+      title: AccountingAck
     AssemblyEventIngestResponse:
       properties:
         accepted:
@@ -12112,6 +12195,11 @@ components:
           - type: string
           - type: 'null'
           title: Idempotency Key
+        receipts:
+          items:
+            $ref: '#/components/schemas/PackageReceiptInput'
+          type: array
+          title: Receipts
       type: object
       title: BitrixLogisticsDraftConfirmRequest
     BitrixLogisticsDraftCreateRequest:
@@ -21666,8 +21754,31 @@ components:
       - phrase
       - phone_model_id
       title: KeywordResponse
+    LogisticsAccountingStatusResponse:
+      properties:
+        transfer_id:
+          type: integer
+          title: Transfer Id
+        receipt_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Receipt Status
+        accounting_status:
+          type: string
+          title: Accounting Status
+      type: object
+      required:
+      - transfer_id
+      - accounting_status
+      title: LogisticsAccountingStatusResponse
     LogisticsConfirmResponse:
       properties:
+        accounting:
+          items:
+            $ref: '#/components/schemas/LogisticsAccountingStatusResponse'
+          type: array
+          title: Accounting
         draft_id:
           type: integer
           title: Draft Id
@@ -21707,6 +21818,11 @@ components:
             $ref: '#/components/schemas/LogisticsPhotoInput'
           type: array
           title: Photos
+        receipts:
+          items:
+            $ref: '#/components/schemas/PackageReceiptInput'
+          type: array
+          title: Receipts
       type: object
       required:
       - actor_user_id
@@ -21746,6 +21862,15 @@ components:
       title: LogisticsDraftCreateRequest
     LogisticsDraftItemResponse:
       properties:
+        requires_goods_count:
+          type: boolean
+          title: Requires Goods Count
+          default: false
+        goods:
+          items:
+            $ref: '#/components/schemas/PackageLine'
+          type: array
+          title: Goods
         id:
           type: integer
           title: Id
@@ -22320,6 +22445,10 @@ components:
       title: LogisticsManualReviewResponse
     LogisticsMonitorResponse:
       properties:
+        accounting:
+          anyOf:
+          - $ref: '#/components/schemas/LogisticsAccountingStatusResponse'
+          - type: 'null'
         transfer_id:
           type: integer
           title: Transfer Id
@@ -23415,6 +23544,11 @@ components:
       title: LogisticsWarehouseSyncItem
     LogisticsWebDraftConfirmRequest:
       properties:
+        receipts:
+          items:
+            $ref: '#/components/schemas/PackageReceiptInput'
+          type: array
+          title: Receipts
         comment:
           anyOf:
           - type: string
@@ -24818,6 +24952,72 @@ components:
       - reservation_quantity_match
       - checked_at
       title: OrderPaymentCheckResponse
+    PackageLine:
+      properties:
+        line_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Line Key
+        product_external_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Product External Id
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        barcode:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Barcode
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,16}0*$)\d{0,12}\.\d{0,3}0*$)
+          title: Quantity
+        characteristic_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Characteristic External Id
+        series_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Series External Id
+      type: object
+      required:
+      - line_key
+      - product_external_id
+      - name
+      - barcode
+      - quantity
+      title: PackageLine
+    PackageReceiptInput:
+      properties:
+        transfer_id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Transfer Id
+        lines:
+          items:
+            $ref: '#/components/schemas/ReceiptCount'
+          type: array
+          maxItems: 1000
+          minItems: 1
+          title: Lines
+        damaged:
+          type: boolean
+          title: Damaged
+          default: false
+      type: object
+      required:
+      - transfer_id
+      - lines
+      title: PackageReceiptInput
     PaginatedCandidates:
       properties:
         items:
@@ -28757,6 +28957,25 @@ components:
       - sources
       - options
       title: QuotedLine
+    ReceiptCount:
+      properties:
+        line_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Line Key
+        quantity:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,16}0*$)\d{0,12}\.\d{0,3}0*$)
+          title: Quantity
+      type: object
+      required:
+      - line_key
+      - quantity
+      title: ReceiptCount
     ReceivableCaseItem:
       properties:
         snapshot_date:

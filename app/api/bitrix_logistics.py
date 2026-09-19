@@ -273,6 +273,7 @@ def confirm_handoff_draft(
         idempotency_key=payload.idempotency_key,
         photos=[],
         source_channel="bitrix",
+        receipts=payload.receipts,
     )
 
 
@@ -328,6 +329,7 @@ def confirm_receipt_draft(
         idempotency_key=payload.idempotency_key,
         photos=[],
         source_channel="bitrix",
+        receipts=payload.receipts,
     )
 
 

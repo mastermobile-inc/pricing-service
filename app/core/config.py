@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     sms_journal_phone_hash_key: str | None = None
     sms_journal_export_allowed_actors: str = ""
     logistics_internal_api_token: str | None = None
+    logistics_scan_accounting_enabled: bool = False
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None
     expertise_onec_sql_file: str | None = None
@@ -568,6 +569,8 @@ class Settings(BaseSettings):
     )
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
+    procurement_pricing_apply_enabled: bool = False
+    procurement_pricing_rules_verified: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
     order_closure_bitrix_enabled: bool = False
     order_closure_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(

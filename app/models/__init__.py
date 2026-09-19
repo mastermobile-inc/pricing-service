@@ -1,5 +1,8 @@
 import os
 
+from app.models.procurement_pricing import (
+    ProcurementPriceBatch, ProcurementPriceLine, ProcurementPriceEvent, ProcurementPricePreset,
+)
 from app.models.base import Base
 
 if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
@@ -78,6 +81,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         LogisticsWarehouse,
         LogisticsWebLaunchToken,
     )
+    from app.models.logistics_accounting import LogisticsAccountingEvent, LogisticsReceiptCheck
     from app.models.logistics_order_plan import (
         LogisticsOrderPlan,
         LogisticsOrderPlanUnit,
@@ -179,6 +183,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.weekly_smartphone_digest import WeeklySmartphoneDigest
 
     __all__ = [
+        "ProcurementPriceBatch", "ProcurementPriceLine", "ProcurementPriceEvent", "ProcurementPricePreset",
         "Base",
         "Product",
         "ProductStock",
@@ -261,6 +266,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "OrderClosureEvent",
         "OrderClosureItem",
         "LogisticsOrderPlan",
+        "LogisticsAccountingEvent",
+        "LogisticsReceiptCheck",
         "LogisticsOrderPlanUnit",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",

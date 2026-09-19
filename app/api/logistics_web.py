@@ -22,6 +22,7 @@ from app.schemas.logistics import (
     LogisticsMonitorResponse,
     LogisticsUserProfile,
 )
+from app.schemas.logistics_accounting import PackageReceiptInput
 from app.services import logistics as logistics_service
 
 router = APIRouter()
@@ -55,6 +56,7 @@ class LogisticsWebDraftScanRequest(BaseModel):
 
 
 class LogisticsWebDraftConfirmRequest(BaseModel):
+    receipts: list[PackageReceiptInput] = Field(default_factory=list)
     comment: str | None = None
     idempotency_key: str | None = None
     photos: list[dict[str, str | None]] = Field(default_factory=list)
@@ -272,6 +274,7 @@ def web_confirm_handoff(
         idempotency_key=payload.idempotency_key,
         photos=payload.photos,
         source_channel="web_fallback",
+        receipts=payload.receipts,
     )
 
 
@@ -325,4 +328,5 @@ def web_confirm_receipt(
         idempotency_key=payload.idempotency_key,
         photos=payload.photos,
         source_channel="web_fallback",
+        receipts=payload.receipts,
     )

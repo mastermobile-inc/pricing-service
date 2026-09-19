@@ -22,6 +22,9 @@ type Draft = {
   item_count: number;
   items: Array<{
     id: number;
+    transfer_id: number;
+    requires_goods_count?: boolean;
+    goods?: Array<{ line_key: string; name: string; barcode: string; quantity: string }>;
     document_number: string;
     lookup_code?: string | null;
     barcode: string;
@@ -31,6 +34,7 @@ type Draft = {
 };
 
 type MonitorItem = {
+  accounting?: { receipt_status: string | null; accounting_status: string } | null;
   transfer_id: number;
   document_number: string;
   site_order_number?: string | null;
@@ -248,6 +252,8 @@ export function LogisticsWorkspace() {
   const [scanCode, setScanCode] = useState("");
   const [comment, setComment] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [damaged, setDamaged] = useState<Record<number, boolean>>({});
   const [confirmKey, setConfirmKey] = useState("");
   const [expected, setExpected] = useState<ExpectedItem[]>([]);
   const [transit, setTransit] = useState<MonitorItem[]>([]);
@@ -340,6 +346,8 @@ export function LogisticsWorkspace() {
       );
       setDraft(data);
       setConfirmKey(newIdempotencyKey());
+      setCounts({});
+      setDamaged({});
       setMessage(`Черновик №${data.id} открыт`);
     });
 
@@ -365,13 +373,29 @@ export function LogisticsWorkspace() {
     run(async () => {
       if (!draft) return;
       const base = operation === "handoff" ? "handoffs" : "receipts";
-      const { data } = await api.post<{ processed_count: number }>(
+      const receipts = draft.items.filter((item) => item.requires_goods_count).map((item) => ({
+        transfer_id: item.transfer_id,
+        damaged: Boolean(damaged[item.transfer_id]),
+        lines: (item.goods || []).map((line) => {
+          const quantity = counts[`${item.transfer_id}:${line.line_key}`]?.trim();
+          if (!quantity || !Number.isFinite(Number(quantity)) || Number(quantity) < 0) {
+            throw new Error(`Укажите фактически принятое количество: ${line.name}`);
+          }
+          return { line_key: line.line_key, quantity };
+        }),
+      }));
+      const { data } = await api.post<{ processed_count: number; accounting?: Array<{ receipt_status: string | null; accounting_status: string }> }>(
         `/bitrix/logistics/${base}/draft/${draft.id}/confirm`,
-        { comment: comment || null, idempotency_key: confirmKey }
+        { comment: comment || null, idempotency_key: confirmKey, receipts }
       );
       setDraft(null);
       setConfirmKey("");
-      setMessage(`Подтверждено: ${data.processed_count}`);
+      const discrepancy = data.accounting?.some((item) => item.receipt_status === "discrepancy");
+      const awaiting = data.accounting?.some((item) => item.accounting_status !== "applied");
+      setMessage(`Подтверждено: ${data.processed_count}. ${discrepancy
+        ? "Расхождение сохранено. Выдача заблокирована до разбора ответственным."
+        : awaiting ? "Физическая операция сохранена; ожидается подтверждение учёта 1С."
+        : ""}`);
       await loadLists("transit");
     });
 
@@ -523,7 +547,25 @@ export function LogisticsWorkspace() {
                         <strong>{item.document_number}</strong>
                         <small>{item.lookup_code || item.barcode}</small>
                       </div>
-                      <b>Принят</b>
+                      <b>В черновике</b>
+                      {item.requires_goods_count ? <fieldset>
+                        <legend>Проверка содержимого пакета</legend>
+                        {(item.goods || []).map((line) => <label key={line.line_key}>
+                          {line.name} · {line.barcode} · Ожидается: {line.quantity}
+                          <input aria-label={`Принято: ${line.name}`} type="number" min="0" step="0.001"
+                            value={counts[`${item.transfer_id}:${line.line_key}`] ?? ""}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setCounts((current) => ({ ...current, [`${item.transfer_id}:${line.line_key}`]: value }));
+                            }} />
+                        </label>)}
+                        <label><input type="checkbox" checked={Boolean(damaged[item.transfer_id])}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setDamaged((current) => ({ ...current, [item.transfer_id]: checked }));
+                          }} />Есть повреждение</label>
+                        <small>Расхождение блокирует выдачу заказа до разбора ответственным.</small>
+                      </fieldset> : null}
                     </article>
                   ))}
                 </div>
@@ -558,7 +600,13 @@ export function LogisticsWorkspace() {
               title: item.document_number,
               subtitle: item.dropoff_warehouse_name || item.current_warehouse_name || "Точка не указана",
               meta: `${item.driver_name || STATUS_LABELS[item.status] || item.status} · ${formatDate(item.last_event_at)}`,
-              warning: item.manual_review_count ? `Ошибок: ${item.manual_review_count}` : undefined,
+              warning: item.accounting?.receipt_status === "discrepancy"
+                ? "Расхождение: выдача заблокирована"
+                : item.accounting?.accounting_status === "pending"
+                  ? "Ожидается подтверждение учёта 1С"
+                  : item.accounting?.accounting_status === "error"
+                    ? "Ошибка учёта 1С; операция сохранена"
+                    : item.manual_review_count ? `Ошибок: ${item.manual_review_count}` : undefined,
             }))}
             onHistory={(id, title) => void openHistory(id, title)}
           />

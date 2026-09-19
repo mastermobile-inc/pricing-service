@@ -39,6 +39,38 @@ describe("LogisticsWorkspace", () => {
     vi.clearAllMocks();
   });
 
+  it("требует фактическое количество и показывает ожидание учёта 1С", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => ({
+      data: path.endsWith("bootstrap") ? { ...bootstrap, capabilities: ["receipt", "monitor"] } : [],
+    }));
+    const draft = { id: 41, draft_type: "receipt", status: "open", warehouse_id: 10,
+      driver_id: null, item_count: 0, items: [] };
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({ data: draft })
+      .mockResolvedValueOnce({ data: { ...draft, item_count: 1, items: [{
+        id: 51, transfer_id: 51, document_number: "Пакет-51", barcode: "PKG-51",
+        requires_goods_count: true,
+        goods: [{ line_key: "line-1", name: "Кабель", barcode: "ITEM-1", quantity: "2" }],
+      }] } })
+      .mockResolvedValueOnce({ data: { processed_count: 1,
+        accounting: [{ receipt_status: "matched", accounting_status: "pending" }] } });
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Начать сканирование" }));
+    fireEvent.change(await screen.findByPlaceholderText("QR, штрихкод или номер"), { target: { value: "PKG-51" } });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
+    const quantity = await screen.findByLabelText("Принято: Кабель");
+    expect(quantity).toHaveValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить (1)" }));
+    expect(await screen.findByText("Укажите фактически принятое количество: Кабель")).toBeVisible();
+    expect(api.post).toHaveBeenCalledTimes(2);
+    fireEvent.change(quantity, { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить (1)" }));
+    expect(await screen.findByText(/ожидается подтверждение учёта 1С/)).toBeVisible();
+    expect(api.post).toHaveBeenLastCalledWith("/bitrix/logistics/receipts/draft/41/confirm", expect.objectContaining({
+      receipts: [{ transfer_id: 51, damaged: false, lines: [{ line_key: "line-1", quantity: "2" }] }],
+    }));
+  });
+
   it("сохраняет пакет сканов после ошибки следующего кода", async () => {
     vi.mocked(api.post)
       .mockResolvedValueOnce({

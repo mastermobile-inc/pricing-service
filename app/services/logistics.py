@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, object_session
 
 from app.models import (
     LogisticsDraft,
@@ -25,7 +25,7 @@ from app.models import (
     LogisticsUser,
     LogisticsWarehouse,
 )
-from app.services import site_order_fulfillment
+from app.services import logistics_accounting, site_order_fulfillment
 
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
@@ -454,6 +454,8 @@ def _bridge_order_transfer_progress(
         )
         source_ref = f"logistics_order_plan:{plan.id}:all_handed_off"
     elif event.event_type == EVENT_ACCEPTED_AT_POINT:
+        if any(not logistics_accounting.ready_for_pickup(session, unit) for unit in required_units):
+            return
         states = [session.get(LogisticsTransferState, transfer_id) for transfer_id in transfer_ids]
         if any(
             state is None
@@ -576,9 +578,22 @@ def _seed_state(session: Session, transfer: LogisticsTransfer) -> LogisticsTrans
 
 def _serialize_draft(draft: LogisticsDraft) -> dict:
     items = []
+    session = object_session(draft)
     for item in draft.items:
+        unit = session.scalar(
+            select(LogisticsOrderPlanUnit).where(
+                LogisticsOrderPlanUnit.transfer_id == item.transfer_id
+            )
+        )
+        scan_led = unit is not None and logistics_accounting.enabled(unit)
         items.append(
             {
+                "requires_goods_count": bool(
+                    scan_led
+                    and draft.draft_type == DRAFT_TYPE_RECEIPT
+                    and draft.warehouse_id == unit.plan.final_warehouse_id
+                ),
+                "goods": logistics_accounting.manifest(unit.payload) if scan_led else [],
                 "id": item.id,
                 "transfer_id": item.transfer_id,
                 "barcode": item.barcode,
@@ -770,6 +785,11 @@ def _require_ready_for_handoff(
         raise _http_error(409, "order plan sync is stale; handoff is blocked")
     if transfer.onec_deleted:
         raise _http_error(409, "1C marked the transfer as deleted")
+    if logistics_accounting.enabled(plan_unit):
+        logistics_accounting.require_commands_enabled()
+        logistics_accounting.manifest(plan_unit.payload)
+        if logistics_accounting.receipt_status(session, plan_unit) is not None:
+            raise _http_error(409, "final receipt already recorded; package cannot be sent again")
     if not transfer.ready_for_handoff or not plan_unit.ready_for_handoff:
         raise _http_error(409, "unit is not posted, printed and assembled for handoff")
 
@@ -872,6 +892,19 @@ def _attach_photos(event: LogisticsTransferEvent, photos: list[dict]) -> None:
         )
 
 
+def _draft_accounting_status(session: Session, draft) -> list[dict]:
+    units = session.scalars(
+        select(LogisticsOrderPlanUnit).where(
+            LogisticsOrderPlanUnit.transfer_id.in_([item.transfer_id for item in draft.items])
+        )
+    ).all()
+    return [
+        logistics_accounting.status_for_unit(session, unit)
+        for unit in units
+        if logistics_accounting.enabled(unit)
+    ]
+
+
 def confirm_draft(
     session: Session,
     *,
@@ -881,9 +914,14 @@ def confirm_draft(
     idempotency_key: str | None,
     photos: list[dict],
     source_channel: str = "telegram",
+    receipts: list | None = None,
 ) -> dict:
     if source_channel not in SOURCE_CHANNELS:
         raise _http_error(422, "unsupported logistics source channel")
+    # Serialise confirmation of this draft, including repeated button clicks.
+    session.execute(
+        select(LogisticsDraft.id).where(LogisticsDraft.id == draft_id).with_for_update()
+    )
     draft = _get_draft(session, draft_id)
     actor = _get_actor(session, actor_user_id)
     if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
@@ -893,6 +931,7 @@ def confirm_draft(
             "draft_id": draft.id,
             "status": draft.status,
             "processed_count": len(draft.items),
+            "accounting": _draft_accounting_status(session, draft),
             "event_type": (
                 EVENT_HANDED_TO_DRIVER
                 if draft.draft_type == DRAFT_TYPE_HANDOFF
@@ -902,10 +941,48 @@ def confirm_draft(
     if not draft.items:
         raise _http_error(422, "draft is empty")
 
+    receipt_by_transfer = {item.transfer_id: item for item in receipts or []}
+    if len(receipt_by_transfer) != len(receipts or []):
+        raise _http_error(422, "duplicate package receipt")
+    if set(receipt_by_transfer) - {item.transfer_id for item in draft.items}:
+        raise _http_error(422, "receipt references a package outside this draft")
+
     processed_count = 0
-    for item in draft.items:
+    plan_ids = session.scalars(
+        select(LogisticsOrderPlanUnit.plan_id).where(
+            LogisticsOrderPlanUnit.transfer_id.in_([item.transfer_id for item in draft.items])
+        )
+    ).all()
+    if plan_ids:
+        session.execute(
+            select(LogisticsOrderPlan.id)
+            .where(LogisticsOrderPlan.id.in_(plan_ids))
+            .order_by(LogisticsOrderPlan.id)
+            .with_for_update()
+        ).all()
+    for item in sorted(draft.items, key=lambda row: row.transfer_id):
+        session.execute(
+            select(LogisticsTransfer.id)
+            .where(LogisticsTransfer.id == item.transfer_id)
+            .with_for_update()
+        )
         transfer = session.get(LogisticsTransfer, item.transfer_id)
         state = _seed_state(session, transfer)
+        unit = session.scalar(
+            select(LogisticsOrderPlanUnit).where(LogisticsOrderPlanUnit.transfer_id == transfer.id)
+        )
+        if unit is not None and logistics_accounting.enabled(unit):
+            logistics_accounting.require_commands_enabled()
+            if not unit.plan.is_active or not _is_fresh_order_plan_sync(unit.plan.synced_at):
+                raise _http_error(409, "package plan is inactive or stale")
+            if (
+                draft.draft_type == DRAFT_TYPE_RECEIPT
+                and draft.warehouse_id == unit.plan.final_warehouse_id
+            ):
+                receipt = receipt_by_transfer.get(transfer.id)
+                if receipt is None:
+                    raise _http_error(409, "final receipt requires an item-by-item count")
+                logistics_accounting.validate_receipt(unit, receipt)
         event_key = f"{idempotency_key}:{transfer.id}" if idempotency_key else None
 
         if draft.draft_type == DRAFT_TYPE_HANDOFF:
@@ -984,6 +1061,32 @@ def confirm_draft(
         state.last_document_ref = transfer.document_number
         state.version += 1
         session.flush()
+        if unit is not None:
+            logistics_accounting.record_fact(
+                session,
+                unit=unit,
+                event=event,
+                actor=actor,
+                receipt=receipt_by_transfer.get(transfer.id),
+            )
+            session.flush()
+            if (
+                logistics_accounting.enabled(unit)
+                and logistics_accounting.receipt_status(session, unit) == "discrepancy"
+            ):
+                _create_manual_review(
+                    session,
+                    review_type="package_receipt_discrepancy",
+                    reason="Расхождение при конечной приёмке; выдача заказа заблокирована",
+                    source_document_type=transfer.source_document_type,
+                    source_external_id=transfer.external_id,
+                    transfer_id=transfer.id,
+                    payload={
+                        "physical_event_id": event.id,
+                        "unit_key": unit.unit_key,
+                        "receipt": receipt_by_transfer[transfer.id].model_dump(mode="json"),
+                    },
+                )
         if draft.draft_type == DRAFT_TYPE_HANDOFF:
             _bridge_rtu_handoff_to_order_fulfillment(
                 session,
@@ -1012,6 +1115,7 @@ def confirm_draft(
         "draft_id": draft.id,
         "status": draft.status,
         "processed_count": processed_count,
+        "accounting": _draft_accounting_status(session, draft),
         "event_type": (
             EVENT_HANDED_TO_DRIVER
             if draft.draft_type == DRAFT_TYPE_HANDOFF
@@ -1228,6 +1332,8 @@ def list_orders_ready_for_pickup(
         required_units = [unit for unit in plan.units if unit.is_required]
         if not required_units or len(required_units) != plan.expected_unit_count:
             continue
+        if any(not logistics_accounting.ready_for_pickup(session, unit) for unit in required_units):
+            continue
         accepted_units = [
             unit
             for unit in required_units
@@ -1308,6 +1414,15 @@ def list_monitor(
     )
     rows = session.scalars(stmt).all()
     transfer_ids = [row.id for row in rows]
+    accounting_by_transfer = {
+        unit.transfer_id: logistics_accounting.status_for_unit(session, unit)
+        for unit in session.scalars(
+            select(LogisticsOrderPlanUnit)
+            .where(LogisticsOrderPlanUnit.transfer_id.in_(transfer_ids))
+            .options(joinedload(LogisticsOrderPlanUnit.plan))
+        ).all()
+        if logistics_accounting.enabled(unit)
+    }
     route_items_by_transfer: dict[int, LogisticsRouteRunItem] = {}
     if transfer_ids:
         route_items = (
@@ -1397,6 +1512,7 @@ def list_monitor(
             continue
         payload.append(
             {
+                "accounting": accounting_by_transfer.get(transfer.id),
                 "transfer_id": transfer.id,
                 "external_id": transfer.external_id,
                 "source_document_type": transfer.source_document_type,
@@ -1483,6 +1599,8 @@ def create_transfer_event(
     transfer = session.get(LogisticsTransfer, transfer_id)
     if transfer is None:
         raise _http_error(404, "transfer not found")
+    if event_type != EVENT_INCIDENT:
+        _require_legacy_mutation(session, transfer)
     state = _seed_state(session, transfer)
     event_key = f"{idempotency_key}:{transfer_id}:{event_type}" if idempotency_key else None
     if event_key is not None:
@@ -1861,10 +1979,23 @@ def _carrier_confirmation_plan(session: Session, item: dict) -> LogisticsOrderPl
     return None
 
 
+def acknowledge_accounting(session: Session, event_id: str, ack) -> dict:
+    row = logistics_accounting.acknowledge(session, event_id, ack)
+    if row.status == "applied" and row.operation == "final_receipt":
+        event = session.get(LogisticsTransferEvent, row.physical_event_id)
+        transfer = session.get(LogisticsTransfer, event.transfer_id)
+        _bridge_order_transfer_progress(session, transfer=transfer, event=event)
+    session.commit()
+    return {"event_id": row.event_id, "status": row.status, "result": row.result}
+
+
 def _order_plan_payload(existing: dict | None, incoming: dict | None) -> dict | None:
     """Keep backend-owned facts while applying the latest read-only 1C snapshot."""
 
     result = dict(incoming or {})
+    if (existing or {}).get("accounting_protocol") == logistics_accounting.PROTOCOL:
+        if result.get("accounting_protocol") != logistics_accounting.PROTOCOL:
+            raise _http_error(409, "scan-led accounting protocol cannot be removed")
     if isinstance(existing, dict) and "carrier_confirmation" in existing:
         result["carrier_confirmation"] = existing["carrier_confirmation"]
     return result or None
@@ -1951,6 +2082,8 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
                 or current.plan_key != plan_key
                 or current_shape != incoming_shape
                 or current.final_warehouse_id != final_warehouse.id
+                or (current.payload or {}).get("accounting_protocol")
+                != (item.get("payload") or {}).get("accounting_protocol")
             )
             if changes_started_plan:
                 _create_order_flow_conflict(
@@ -2011,8 +2144,12 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
                 raise _http_error(422, "order plan unit references unknown warehouse")
             unit = existing_by_key.get(unit_key)
             if unit is None:
-                unit = LogisticsOrderPlanUnit(plan_id=row.id, unit_key=unit_key)
+                unit = LogisticsOrderPlanUnit(plan=row, unit_key=unit_key)
                 session.add(unit)
+            if unit.transfer_external_id != unit_item.get(
+                "transfer_external_id"
+            ) and _plan_has_started(row):
+                raise _http_error(409, "started package identity cannot be changed")
             unit.source_warehouse_id = source_warehouse.id
             unit.target_warehouse_id = target_warehouse.id
             unit.internal_order_external_id = unit_item.get("internal_order_external_id")
@@ -2021,6 +2158,7 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
             unit.ready_for_handoff = unit_item.get("ready_for_handoff", False)
             unit.readiness = unit_item.get("readiness")
             unit.synced_at = sync_time
+            logistics_accounting.freeze_started_unit(session, unit, unit_item.get("payload"))
             unit.payload = unit_item.get("payload")
             if unit.transfer_external_id:
                 transfer = session.scalar(
@@ -2315,6 +2453,29 @@ def sync_units(session: Session, items: list[dict]) -> dict:
             )
         )
         created = False
+        if row is not None:
+            existing_unit = session.scalar(
+                select(LogisticsOrderPlanUnit).where(LogisticsOrderPlanUnit.transfer_id == row.id)
+            )
+            if (
+                existing_unit is not None
+                and logistics_accounting.enabled(existing_unit)
+                and _plan_has_started(existing_unit.plan)
+            ):
+                if (
+                    flow_mode != row.flow_mode
+                    or item.get("plan_key") != row.plan_key
+                    or item.get("plan_version") != row.plan_version
+                    or item.get("unit_key") != row.unit_key
+                    or item.get("origin_order_external_id") != row.origin_order_external_id
+                    or barcode != row.barcode
+                    or lookup_code != row.lookup_code
+                    or source_id != row.source_warehouse_id
+                    or target_id != row.target_warehouse_id
+                    or document_target_id != row.document_target_warehouse_id
+                    or item.get("is_required", True) != row.is_required
+                ):
+                    raise _http_error(409, "sent package identity and route are immutable")
         if row is None:
             row = LogisticsTransfer(
                 source_document_type=source_document_type,
@@ -2659,6 +2820,16 @@ def list_manual_reviews(
     ]
 
 
+def _require_legacy_mutation(session: Session, transfer) -> None:
+    unit = session.scalar(
+        select(LogisticsOrderPlanUnit).where(LogisticsOrderPlanUnit.transfer_id == transfer.id)
+    )
+    if unit is not None and logistics_accounting.enabled(unit):
+        raise _http_error(
+            409, "Для новой упаковки требуется отдельный разбор; ручная смена состояния запрещена"
+        )
+
+
 def handoff_to_external_carrier(
     session: Session,
     *,
@@ -2675,6 +2846,7 @@ def handoff_to_external_carrier(
     transfer = session.get(LogisticsTransfer, transfer_id)
     if transfer is None:
         raise _http_error(404, "transfer not found")
+    _require_legacy_mutation(session, transfer)
     state = _seed_state(session, transfer)
     if state.status != STATUS_IN_TRANSIT:
         raise _http_error(409, "transfer must be in transit before external carrier handoff")
@@ -2736,6 +2908,7 @@ def handoff_to_external_carrier_from_sync(
     transfer = session.get(LogisticsTransfer, transfer_id)
     if transfer is None:
         raise _http_error(404, "transfer not found")
+    _require_legacy_mutation(session, transfer)
     state = _seed_state(session, transfer)
     event_key = (
         f"{idempotency_key}:{transfer_id}:{EVENT_HANDED_TO_EXTERNAL_CARRIER}"
@@ -2817,6 +2990,7 @@ def accept_from_external_carrier(
     transfer = session.get(LogisticsTransfer, transfer_id)
     if transfer is None:
         raise _http_error(404, "transfer not found")
+    _require_legacy_mutation(session, transfer)
     state = _seed_state(session, transfer)
     if state.status != STATUS_WITH_EXTERNAL_CARRIER:
         raise _http_error(409, "transfer is not with external carrier")
@@ -2890,6 +3064,7 @@ def manual_ready_override(
     transfer = session.scalar(_logistics_unit_selector(source_document_type, external_id))
     if transfer is None:
         raise _http_error(404, "transfer not found")
+    _require_legacy_mutation(session, transfer)
     if lookup_code:
         transfer.lookup_code = lookup_code
     if site_order_number:

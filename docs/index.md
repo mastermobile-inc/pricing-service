@@ -43,3 +43,5 @@
 - `openapi.yaml` генерируется из FastAPI командой `python scripts/export_openapi.py`; CI проверяет drift через `--check`.
 - Новые крупные спецификации оформляйте по lifecycle из `docs/specs/README.md` и шаблону `/opt/MM/docs/templates/spec.md`.
 - README не расширяйте как бесконечный журнал; новые большие сценарии выносите в `docs/`.
+
+- [№4065 — Procurement Pricing Dashboard 4065](specs/procurement-pricing-4065.md).

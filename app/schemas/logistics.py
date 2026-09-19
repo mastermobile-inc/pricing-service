@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.logistics_accounting import PackageLine, PackageReceiptInput
+
 
 class LogisticsPhotoInput(BaseModel):
     telegram_file_id: str
@@ -180,9 +182,12 @@ class LogisticsDraftConfirmRequest(BaseModel):
     comment: str | None = None
     idempotency_key: str | None = None
     photos: list[LogisticsPhotoInput] = Field(default_factory=list)
+    receipts: list[PackageReceiptInput] = Field(default_factory=list)
 
 
 class LogisticsDraftItemResponse(BaseModel):
+    requires_goods_count: bool = False
+    goods: list[PackageLine] = Field(default_factory=list)
     id: int
     transfer_id: int
     barcode: str
@@ -207,7 +212,14 @@ class LogisticsDraftResponse(BaseModel):
     items: list[LogisticsDraftItemResponse]
 
 
+class LogisticsAccountingStatusResponse(BaseModel):
+    transfer_id: int
+    receipt_status: str | None = None
+    accounting_status: str
+
+
 class LogisticsConfirmResponse(BaseModel):
+    accounting: list[LogisticsAccountingStatusResponse] = Field(default_factory=list)
     draft_id: int
     status: str
     processed_count: int
@@ -251,6 +263,7 @@ class LogisticsOrderReadyForPickupResponse(BaseModel):
 
 
 class LogisticsMonitorResponse(BaseModel):
+    accounting: LogisticsAccountingStatusResponse | None = None
     transfer_id: int
     external_id: str
     source_document_type: str = "transfer"

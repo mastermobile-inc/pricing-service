@@ -42,10 +42,22 @@ from app.schemas.logistics import (
     LogisticsWarehouseResponse,
     LogisticsWarehouseSyncItem,
 )
+from app.schemas.logistics_accounting import AccountingAck
 from app.services import logistics as logistics_service
+from app.services import logistics_accounting
 from app.services import transfer_assistant as transfer_assistant_service
 
 router = APIRouter(dependencies=[Depends(require_logistics_internal_token)])
+
+
+@router.get("/accounting/events")
+def accounting_events(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db)):
+    return logistics_accounting.pending_events(db, limit)
+
+
+@router.post("/accounting/events/{event_id}/ack")
+def acknowledge_accounting(event_id: str, payload: AccountingAck, db: Session = Depends(get_db)):
+    return logistics_service.acknowledge_accounting(db, event_id, payload)
 
 
 @router.post("/auth/telegram", response_model=LogisticsUserProfile)
@@ -196,6 +208,7 @@ def confirm_handoff(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=[photo.model_dump() for photo in payload.photos],
+        receipts=payload.receipts,
     )
 
 
@@ -240,6 +253,7 @@ def confirm_receipt(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=[photo.model_dump() for photo in payload.photos],
+        receipts=payload.receipts,
     )
 
 
