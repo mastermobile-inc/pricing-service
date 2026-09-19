@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 from xml.etree import ElementTree
 
 import pytest
@@ -16,10 +17,23 @@ from app.services import order_prepay_expiry as policy
 NOW = datetime(2026, 9, 7, 12, tzinfo=UTC)
 
 
+def clock(*transitions):
+    return dict(
+        policy="web_prepay_72h_v2",
+        enrollment_id=UUID(int=1),
+        enrolled_at=NOW - timedelta(days=10),
+        events=[
+            dict(event_id=UUID(int=i + 10), sequence=i, occurred_at=at, available=allowed)
+            for i, (at, allowed) in enumerate(transitions, 1)
+        ],
+    )
+
+
 def snapshot(**changes):
     data = dict(
         site_order_id="245000",
-        created_at=NOW - timedelta(hours=73),
+        created_at=NOW - timedelta(days=10),
+        payment_clock=clock((NOW - timedelta(hours=73), True)),
         observed_at=NOW,
         amount=Decimal("1200.50"),
         currency="RUB",
@@ -58,7 +72,10 @@ def db():
 @pytest.mark.parametrize("age,allowed", [(259199, False), (259200, False), (259201, True)])
 def test_exact_elapsed_seconds(age, allowed):
     assert (
-        policy.site_blocker(snapshot(created_at=NOW - timedelta(seconds=age)), NOW) is None
+        policy.site_blocker(
+            snapshot(payment_clock=clock((NOW - timedelta(seconds=age), True))), NOW
+        )
+        is None
     ) == allowed
 
 
@@ -101,7 +118,7 @@ def test_repeated_discovery_has_one_stable_batch(db):
         queue.render_commands_xml(db.scalars(select(OrderClosureBatch)).all())
     )
     assert xml.find("command").attrib["source_type"] == policy.SOURCE
-    assert xml.findtext("command/order/site_created_msk") == "20260904140000"
+    assert xml.findtext("command/order/site_created_msk") == "20260828150000"
 
 
 def test_auto_and_manual_apply_gates_are_independent(db):
@@ -115,10 +132,10 @@ def test_auto_and_manual_apply_gates_are_independent(db):
 
 def test_observation_cannot_mark_unapplied_order_complete(db):
     policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
-    with pytest.raises(queue.OrderClosureConflict):
-        policy.observe(db, snapshot(canceled=True, status="D"), apply_enabled=True, now=NOW)
+    result = policy.observe(db, snapshot(canceled=True, status="D"), apply_enabled=True, now=NOW)
     b = db.scalar(select(OrderClosureBatch))
     assert not b.source_payload["site_canceled"]
+    assert result.action == "manual_review" and b.command_kind is None
 
 
 def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
@@ -160,9 +177,6 @@ def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
     )
     policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
     assert b.status == "diagnosed"
-    with pytest.raises(queue.OrderClosureConflict, match="has_payment"):
-        policy.observe(db, snapshot(has_payment_history=True), apply_enabled=True, now=NOW)
-    assert b.status == "diagnosed"
     policy.observe(db, snapshot(), apply_enabled=True, now=NOW)
     assert b.status == "approved" and b.actor_id == policy.ACTOR
     assert policy.pending_work(db)[0].action == "refresh"
@@ -189,13 +203,19 @@ def test_full_automatic_lifecycle_requires_fresh_site_and_native_receipt(db):
 
 def test_snapshot_identity_changes_never_retarget_existing_batch(db):
     policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
-    with pytest.raises(queue.OrderClosureConflict, match="identity"):
-        policy.observe(
-            db,
-            snapshot(amount=Decimal("1"), payment_row_amount=Decimal("1")),
-            apply_enabled=True,
-            now=NOW,
-        )
+    b = db.scalar(select(OrderClosureBatch))
+    b.status = "approved"
+    b.command_kind = "apply"
+    result = policy.observe(
+        db,
+        snapshot(amount=Decimal("1"), payment_row_amount=Decimal("1")),
+        apply_enabled=True,
+        now=NOW,
+    )
+    assert result.action == "manual_review"
+    assert b.last_error_code == "site_order_identity_changed" and b.command_kind is None
+    assert b.source_payload["site_snapshot"]["amount"] == "1200.50"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
 
 
 def test_stale_or_failed_native_command_is_not_blindly_retried(db):
@@ -232,8 +252,151 @@ def test_command_endpoint_requires_all_automatic_gates(
             order_prepay72_apply_enabled=apply_enabled,
         ),
     )
+    monkeypatch.setattr(queue, "_now", lambda value=None: value or NOW)
     response = api.commands(
         limit=1, allow_apply=False, allow_auto_apply=requested, _token="test", db=db
     )
     commands = ElementTree.fromstring(response.body).findall("command")
     assert len(commands) == int(requested and enabled and apply_enabled)
+
+
+def test_old_order_with_recent_payment_opening_is_not_expired():
+    s = snapshot(payment_clock=clock((NOW - timedelta(hours=1), True)))
+    assert policy.site_blocker(s, NOW) == "prepayment_not_expired"
+
+
+def test_pause_preserves_remaining_time_and_resume_does_not_reset():
+    s = snapshot(
+        payment_clock=clock(
+            (NOW - timedelta(hours=100), True),
+            (NOW - timedelta(hours=70), False),
+            (NOW - timedelta(hours=42), True),
+        )
+    )
+    assert policy.site_blocker(s, NOW) == "prepayment_not_expired"  # 30 + 42 = 72
+    assert (
+        policy.site_blocker(
+            s.model_copy(update={"observed_at": NOW + timedelta(seconds=1)}),
+            NOW + timedelta(seconds=1),
+        )
+        is None
+    )
+    paused = snapshot(payment_clock=clock((NOW - timedelta(hours=100), True), (NOW, False)))
+    assert policy.site_blocker(paused, NOW) == "payment_clock_paused"
+
+
+def test_legacy_snapshot_cannot_close_even_when_older_than_72_hours(db):
+    with pytest.raises(queue.OrderClosureConflict, match="payment_clock_missing"):
+        policy.observe(db, snapshot(payment_clock=None), apply_enabled=True, now=NOW)
+    assert db.scalar(select(OrderClosureBatch)) is None
+
+
+def test_old_batches_cannot_be_leased_even_with_all_apply_flags_enabled(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    b.actor_id = "automation:prepay72:v1"
+    b.status = "approved"
+    b.command_kind = "apply"
+    assert queue.lease_commands(db, allow_apply=True, allow_auto_apply=True, now=NOW) == []
+
+
+def test_missing_reordered_or_repeated_events_never_credit_time():
+    from copy import deepcopy
+
+    c = clock(
+        (NOW - timedelta(hours=100), True),
+        (NOW - timedelta(hours=50), False),
+        (NOW - timedelta(hours=49), True),
+    )
+    for change in ("gap", "duplicate", "reversed", "future", "same_state"):
+        broken = deepcopy(c)
+        if change == "gap":
+            broken["events"].pop(1)
+        elif change == "duplicate":
+            broken["events"][1]["event_id"] = broken["events"][0]["event_id"]
+        elif change == "reversed":
+            broken["events"][1]["occurred_at"] = NOW - timedelta(hours=101)
+        elif change == "future":
+            broken["events"][-1]["occurred_at"] = NOW + timedelta(seconds=1)
+        else:
+            broken["events"][1]["available"] = True
+        assert policy.site_blocker(snapshot(payment_clock=broken), NOW).startswith("payment_clock_")
+
+
+def test_history_cannot_be_rewritten_to_expire_an_existing_order(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    changed = snapshot(payment_clock=clock((NOW - timedelta(hours=99), True)))
+    result = policy.observe(db, changed, apply_enabled=True, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    assert result.action == "manual_review"
+    assert b.last_error_code == "payment_clock_history_rewritten"
+    assert b.command_kind is None
+
+
+def test_seconds_between_observation_and_processing_do_not_make_order_expired():
+    s = snapshot(payment_clock=clock((NOW - timedelta(hours=72), True)))
+    assert policy.site_blocker(s, NOW + timedelta(seconds=120)) == "prepayment_not_expired"
+
+
+def test_native_evidence_contains_payment_clock_not_fake_creation_time():
+    evidence = policy.command_evidence(snapshot())
+    assert evidence["prepay_policy"] == "web_prepay_72h_v2"
+    assert evidence["payment_elapsed_seconds"] == str(73 * 3600)
+    assert evidence["payment_first_opened_msk"] == "20260904140000"
+    assert evidence["site_created_msk"] == "20260828150000"
+
+
+def test_payment_observation_revokes_an_approval_before_it_can_be_leased(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    b.status = "approved"
+    b.command_kind = "apply"
+    result = policy.observe(db, snapshot(has_payment_history=True), apply_enabled=True, now=NOW)
+    assert result.action == "manual_review" and b.command_kind is None
+    assert b.last_error_code == "has_payment"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
+    # A later incorrect disappearance of payment history must not restart a failed apply.
+    assert policy.observe(db, snapshot(), apply_enabled=True, now=NOW).action == "manual_review"
+
+
+def test_pause_revokes_pending_approval_and_resume_requests_new_diagnosis(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    b.status = "approved"
+    b.command_kind = "apply"
+    paused = clock((NOW - timedelta(hours=73), True), (NOW, False))
+    policy.observe(db, snapshot(payment_clock=paused), apply_enabled=True, now=NOW)
+    assert b.status == "draft" and b.command_kind is None
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW) == []
+    resumed = clock(
+        (NOW - timedelta(hours=73), True), (NOW, False), (NOW + timedelta(seconds=10), True)
+    )
+    later = NOW + timedelta(seconds=11)
+    policy.observe(
+        db, snapshot(payment_clock=resumed, observed_at=later), apply_enabled=True, now=later
+    )
+    assert b.status == "draft" and b.command_kind == "diagnose"
+    assert b.diagnosis_hash is None
+
+
+def test_expired_site_observation_is_checked_again_at_apply_leasing(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    b.status = "approved"
+    b.command_kind = "apply"
+    assert queue.lease_commands(db, allow_auto_apply=True, now=NOW + timedelta(seconds=121)) == []
+    assert b.status == "stale" and b.last_error_code == "site_snapshot_stale"
+
+
+def test_conflict_during_a_live_lease_requires_manual_review_even_after_receipt(db):
+    policy.observe(db, snapshot(), apply_enabled=False, now=NOW)
+    b = db.scalar(select(OrderClosureBatch))
+    b.status = "approved"
+    b.command_kind = "apply"
+    queue.lease_commands(db, allow_auto_apply=True, now=NOW)
+    result = policy.observe(db, snapshot(has_payment_history=True), apply_enabled=True, now=NOW)
+    assert result.action == "manual_review" and b.status == "leased"
+    assert b.source_payload["requires_manual_review"]
+    b.status = "applied"  # an in-flight native operation may have completed
+    assert policy.observe(db, snapshot(), apply_enabled=True, now=NOW).action == "manual_review"
+    assert policy.pending_work(db) == []
