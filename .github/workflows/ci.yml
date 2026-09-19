@@ -6,6 +6,13 @@ name: CI
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,6 +24,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.lock
 
       - name: Install dependencies
         run: |
@@ -33,10 +44,53 @@ jobs:
         run: python scripts/validate_cli_registry.py
 
       - name: Format check (black)
+        env:
+          BLACK_NUM_WORKERS: "1"
         run: black --check .
 
       - name: OpenAPI contract check
         run: python scripts/export_openapi.py --check
 
       - name: Tests (pytest)
-        run: pytest
+        run: pytest --junitxml=test-results/python.xml --durations=20
+
+      - name: Python test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tests-${{ github.sha }}
+          path: test-results/python.xml
+          if-no-files-found: warn
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: TypeScript and production build
+        run: npm run build
+
+      - name: UI unit tests
+        run: npm test -- --maxWorkers=2 --reporter=junit --outputFile=test-results/ui.xml
+
+      - name: UI test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-tests-${{ github.sha }}
+          path: ui/test-results/ui.xml
+          if-no-files-found: warn
