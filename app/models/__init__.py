@@ -131,6 +131,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ProcurementProductCardSyncState,
         ProcurementSupplierProfile,
     )
+    from app.models.procurement_pricing import (
+        ProcurementPriceBatch,
+        ProcurementPriceEvent,
+        ProcurementPriceLine,
+        ProcurementPricePreset,
+    )
     from app.models.product import Product
     from app.models.product_compatibility import ProductCompatibility
     from app.models.product_competitor_item_decision import ProductCompetitorItemDecision
@@ -209,6 +215,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.weekly_smartphone_digest import WeeklySmartphoneDigest
 
     __all__ = [
+        "ProcurementPriceBatch",
+        "ProcurementPriceEvent",
+        "ProcurementPriceLine",
+        "ProcurementPricePreset",
         "Base",
         "Product",
         "ProductStock",

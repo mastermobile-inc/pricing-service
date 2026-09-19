@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
@@ -772,6 +772,9 @@ class Settings(BaseSettings):
     procurement_assortment_manual_overrides_path: str = (
         "config/assortment/display-manual-overrides.json"
     )
+    procurement_pricing_apply_enabled: bool = False
+    procurement_pricing_history_complete_from: date | None = None
+
     procurement_order_formation_entity_type_id: int | None = None
     procurement_order_formation_mapping_path: str = "build/bitrix/order_formation_mapping.json"
     procurement_product_row_exclusions_path: str = "config/procurement-product-row-exclusions.json"

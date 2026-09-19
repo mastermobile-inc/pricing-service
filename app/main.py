@@ -60,6 +60,7 @@ from app.api.procurement_order_formation import (
     page_router as procurement_order_formation_page_router,
 )
 from app.api.procurement_order_formation import router as procurement_order_formation_router
+from app.api.procurement_pricing import router as procurement_pricing_router
 from app.api.receivable_workplace import page_router as receivable_workplace_page_router
 from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
@@ -242,3 +243,4 @@ app.include_router(sms_journal_router)
 app.include_router(procurement_labels_router, prefix="/api")
 app.include_router(procurement_assortment_router, prefix="/api")
 app.include_router(procurement_order_formation_router, prefix="/api")
+app.include_router(procurement_pricing_router, prefix="/api")
