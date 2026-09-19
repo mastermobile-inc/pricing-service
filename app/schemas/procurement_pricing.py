@@ -29,6 +29,10 @@ class PricingFilter(BaseModel):
         "profitability",
         "defect_pct",
         "dynamics_pct",
+        "forecast_qty",
+        "forecast_amount",
+        "previous_year_qty",
+        "previous_year_amount",
     ] = "name"
     descending: bool = False
     offset: int = Field(default=0, ge=0)
@@ -43,6 +47,10 @@ class PricingFilter(BaseModel):
             if lo is not None and hi is not None and lo > hi:
                 raise ValueError("Нижняя граница больше верхней")
         return self
+
+
+class PricingExportFilter(PricingFilter):
+    format: Literal["csv", "xlsx"] = "xlsx"
 
 
 class CompetitorOffer(BaseModel):

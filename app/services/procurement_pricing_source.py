@@ -2,13 +2,14 @@
 
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 from threading import Lock
 from time import monotonic
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.infrastructure.db import get_onec_engine
 from app.models.competitor_item import CompetitorItem
 from app.models.competitor_item_match import CompetitorItemMatch, CompetitorItemMatchStatus
@@ -37,28 +38,37 @@ PRICE_SELECT = """
     WHERE r._Fld6961RRef=p._IDRRef AND r._Fld6960RRef=t._IDRRef
       AND r._Fld6962RRef=0x00000000000000000000000000000000
       AND r._Active=0x01 AND r._Period<=:at
-    ORDER BY r._Period DESC, r._RecorderRRef DESC
+    ORDER BY r._Period DESC, r._RecorderTRef DESC, r._RecorderRRef DESC, r._LineNo DESC
  ) r
  LEFT JOIN _Reference20 c ON c._IDRRef=COALESCE(r._Fld6963RRef,t._Fld1016RRef)
  WHERE p._Marked=0x00 AND t._Marked=0x00
-   AND RTRIM(p._Code) IN :codes AND RTRIM(t._Code) IN ('РБ0000005','РБ0000011')
+   AND p._Code IN :codes AND t._Code IN ('РБ0000005','РБ0000011')
 """
 
 
 def current_prices(codes: list[str], *, at: datetime | None = None) -> dict:
     result = {}
     at = at or datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
+    requested = set(codes)
+    if not requested:
+        return result
+    # Large IN lists make this legacy SQL Server choose a very slow plan.
+    # A complete indexed price read is ~3 seconds; filter its result locally.
+    if len(requested) > 200:
+        query = text(PRICE_SELECT.replace("p._Code IN :codes AND ", ""))
+        params = {"at": at}
+    else:
+        query = text(PRICE_SELECT).bindparams(bindparam("codes", expanding=True))
+        params = {"codes": sorted(requested), "at": at}
     with get_onec_engine().connect() as connection:
-        for offset in range(0, len(codes), 500):
-            query = text(PRICE_SELECT).bindparams(bindparam("codes", expanding=True))
-            for row in connection.execute(
-                query, {"codes": codes[offset : offset + 500], "at": at}
-            ).mappings():
-                result[(row["code"], PRICE_CODES[row["price_code"]])] = {
-                    "price": row["price"],
-                    "currency": _normalize_currency(row["currency_code"], row["currency_name"], ""),
-                    "date": row["price_at"],
-                }
+        for row in connection.execute(query, params).mappings():
+            if row["code"] not in requested:
+                continue
+            result[(row["code"], PRICE_CODES[row["price_code"]])] = {
+                "price": row["price"],
+                "currency": _normalize_currency(row["currency_code"], row["currency_name"], ""),
+                "date": row["price_at"],
+            }
     return result
 
 
@@ -70,7 +80,7 @@ def price_history(code: str, start: date, end: date) -> list[PriceHistoryPoint]:
       JOIN _Reference62 p ON p._IDRRef=r._Fld6961RRef
       JOIN _Reference87 t ON t._IDRRef=r._Fld6960RRef
       LEFT JOIN _Reference20 c ON c._IDRRef=r._Fld6963RRef
-      WHERE RTRIM(p._Code)=:code AND RTRIM(t._Code) IN ('РБ0000005','РБ0000011')
+      WHERE p._Code=:code AND t._Code IN ('РБ0000005','РБ0000011')
         AND r._Active=0x01 AND r._Fld6962RRef=0x00000000000000000000000000000000
         AND r._Period>=:start AND r._Period<:end
       ORDER BY r._Period,r._RecorderRRef
@@ -113,6 +123,7 @@ def _period(codes, start, end):
         return {}, {}, {}
     # Aggregate the entire catalog once per period; never repeat scans per page/SKU.
     from app.services.procurement_order_metrics import DEFECT_REASON_SQL
+
     statements = [
         """SELECT RTRIM(product._Code) code, SUM(sale_line._Fld4971) sales_qty,
            SUM(sale_line._Fld4982) sales_amount FROM _Document203 sale
@@ -134,7 +145,19 @@ def _period(codes, start, end):
              AND cost._Period>=:start AND cost._Period<:end GROUP BY product._Code""",
     ]
     with get_onec_engine().connect() as connection:
-        return tuple({r['code']: dict(r) for r in connection.execute(text(sql),{'start':datetime.combine(start,time.min),'end':datetime.combine(end,time.min)}).mappings()} for sql in statements)
+        return tuple(
+            {
+                r["code"]: dict(r)
+                for r in connection.execute(
+                    text(sql),
+                    {
+                        "start": datetime.combine(start, time.min),
+                        "end": datetime.combine(end, time.min),
+                    },
+                ).mappings()
+            }
+            for sql in statements
+        )
 
 
 def _last_year(day: date) -> date:
@@ -144,7 +167,9 @@ def _last_year(day: date) -> date:
         return day.replace(year=day.year - 1, day=28)
 
 
-def _load_table(db: Session, filters: PricingFilter, *, paginate=True) -> PricingTable:
+def _load_table(
+    db: Session, filters: PricingFilter, *, paginate=True, include_prices=True
+) -> PricingTable:
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     today = now.date()
     if filters.start > today:
@@ -185,11 +210,17 @@ def _load_table(db: Session, filters: PricingFilter, *, paginate=True) -> Pricin
     rows = []
     warnings = []
     actual_end = min(filters.end + timedelta(days=1), today + timedelta(days=1))
-    complete = first_sale is not None and first_sale.date() <= filters.start
+    verified_from = get_settings().procurement_pricing_history_complete_from
+    complete = (
+        verified_from is not None
+        and verified_from <= filters.start
+        and first_sale is not None
+        and first_sale.date() <= filters.start
+    )
     if not complete:
-        warnings.append("История до начала периода не подтверждена; прогноз недоступен")
+        warnings.append("Полнота истории за период не подтверждена; прогноз недоступен")
     codes = sorted({p.code_1c.strip() for p in products if p.code_1c and p.code_1c.strip()})
-    prices = current_prices(codes)
+    prices = current_prices(codes) if include_prices else {}
     sales, returns, costs = _period(codes, filters.start, actual_end)
     completed, completed_returns, _ = _period(codes, filters.start, min(actual_end, today))
     days = (actual_end - filters.start).days
@@ -280,15 +311,42 @@ _snapshot_lock = Lock()
 
 
 def build_table(db: Session, filters: PricingFilter, *, paginate=True) -> PricingTable:
-    key=(id(db.get_bind()),filters.start,filters.end)
+    key = (id(db.get_bind()), filters.start, filters.end)
     with _snapshot_lock:
-        cached=_snapshot_cache.get(key)
-        if cached is None or monotonic()-cached[0]>60:
-            snapshot=_load_table(db,PricingFilter(start=filters.start,end=filters.end),paginate=False)
-            if len(_snapshot_cache)>=4:
-                del _snapshot_cache[min(_snapshot_cache,key=lambda k:_snapshot_cache[k][0])]
-            _snapshot_cache[key]=(monotonic(),snapshot)
+        cached = _snapshot_cache.get(key)
+        if cached is None or monotonic() - cached[0] > 60:
+            snapshot = _load_table(
+                db,
+                PricingFilter(start=filters.start, end=filters.end),
+                paginate=False,
+                include_prices=False,
+            )
+            if len(_snapshot_cache) >= 4:
+                del _snapshot_cache[min(_snapshot_cache, key=lambda k: _snapshot_cache[k][0])]
+            _snapshot_cache[key] = (monotonic(), snapshot)
         else:
-            snapshot=cached[1]
-    selected=filter_rows(snapshot.items,filters)
-    return snapshot.model_copy(update={'items':selected[filters.offset:filters.offset+filters.limit] if paginate else selected,'total':len(selected)})
+            snapshot = cached[1]
+    # Facts can be filtered before reading prices: the default page needs 50 SKUs,
+    # not 29k. Price sorting and full export deliberately read the complete selection.
+    selected = filter_rows(snapshot.items, filters)
+    price_sort = filters.sort in {"bronze", "platinum"}
+    if paginate and not price_sort:
+        selected = selected[filters.offset : filters.offset + filters.limit]
+    prices = current_prices([row.code for row in selected]) if selected else {}
+    enriched = []
+    for row in selected:
+        updates = {}
+        for kind in ("bronze", "platinum"):
+            price = prices.get((row.code, kind), {})
+            updates[kind] = price.get("price") if price.get("currency") == "RUB" else None
+        enriched.append(row.model_copy(update=updates))
+    if price_sort:
+        enriched = filter_rows(enriched, filters)
+        if paginate:
+            enriched = enriched[filters.offset : filters.offset + filters.limit]
+    return snapshot.model_copy(
+        update={
+            "items": enriched,
+            "total": len(filter_rows(snapshot.items, filters)),
+        }
+    )

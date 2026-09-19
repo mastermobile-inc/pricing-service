@@ -1,9 +1,9 @@
 import csv
 from datetime import date
 from io import BytesIO, StringIO
-from typing import Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from openpyxl import Workbook
 from sqlalchemy import select
@@ -18,7 +18,9 @@ from app.schemas.procurement_pricing import (
     PriceHistoryPoint,
     PricePresetRead,
     PricePresetWrite,
+    PricingExportFilter,
     PricingFilter,
+    PricingRow,
     PricingTable,
 )
 from app.services.bitrix_procurement_order_formation_auth import (
@@ -57,7 +59,9 @@ def failure(exc):
 
 @router.get("/table", response_model=PricingTable)
 def table(
-    filters: PricingFilter = Depends(), db: Session = Depends(get_db), session=Depends(buyer)
+    filters: Annotated[PricingFilter, Query()],
+    db: Session = Depends(get_db),
+    session=Depends(buyer),
 ):
     try:
         return build_table(db, filters)
@@ -82,8 +86,7 @@ def safe_cell(value):
 
 @router.get("/export")
 def export(
-    format: Literal["csv", "xlsx"] = "xlsx",
-    filters: PricingFilter = Depends(),
+    filters: Annotated[PricingExportFilter, Query()],
     db: Session = Depends(get_db),
     session=Depends(buyer),
 ):
@@ -91,30 +94,52 @@ def export(
         result = build_table(db, filters, paginate=False)
     except Exception as exc:
         raise failure(exc) from exc
-    fields = (
-        list(result.items[0].model_fields)
-        if result.items
-        else [
-            "code",
-            "name",
-            "bronze",
-            "platinum",
-            "sales_qty",
-            "sales_amount",
-            "forecast_qty",
-            "forecast_amount",
-        ]
-    )
+    labels = {
+        "code": "Код 1С",
+        "name": "Наименование",
+        "subject": "Предмет",
+        "brand": "Бренд",
+        "quality": "Качество",
+        "bronze": "Бронза",
+        "platinum": "Платина",
+        "currency": "Валюта наших цен",
+        "sales_qty": "Факт продаж, шт.",
+        "sales_amount": "Факт чистой выручки, ₽",
+        "profitability": "Рентабельность, %",
+        "defect_qty": "Подтверждённый брак, шт.",
+        "defect_pct": "Брак, %",
+        "dynamics_pct": "Динамика продаж, %",
+        "forecast_qty": "Прогноз продаж, шт.",
+        "forecast_amount": "Прогноз выручки, ₽",
+        "previous_year_qty": "Прошлый год, шт.",
+        "previous_year_amount": "Прошлый год, ₽",
+        "forecast_status": "Состояние прогноза",
+        "competitors": "Предложения конкурентов",
+    }
+    forecast_labels = {
+        "ready": "Рассчитан",
+        "completed": "Период завершён",
+        "history_incomplete": "Полнота истории не подтверждена",
+        "history_missing": "Нет истории",
+        "no_completed_days": "Нет завершённых дней",
+    }
+    fields = list(PricingRow.model_fields)
     rows = [
         ["Период", str(result.start), str(result.end)],
         ["Обновлено", result.observed_at.isoformat()],
-        fields,
+        [labels[key] for key in fields],
     ]
     for item in result.items:
-        values = item.model_dump(mode="json")
-        rows.append(
-            [safe_cell(str(values[key])) if values[key] is not None else "" for key in fields]
+        values = item.model_dump()
+        values["competitors"] = "\n".join(
+            f"{offer.name}: {offer.price} {offer.currency or 'валюта не указана'}; "
+            f"{offer.collected_at.isoformat() if offer.collected_at else 'дата не указана'}; "
+            f"{offer.url or ''}"
+            for offer in item.competitors
         )
+        values["forecast_status"] = forecast_labels.get(item.forecast_status, "Нет данных")
+        rows.append([safe_cell(values[key]) if values[key] is not None else "" for key in fields])
+    format = filters.format
     if format == "csv":
         stream = StringIO()
         csv.writer(stream, delimiter=";").writerows(rows)

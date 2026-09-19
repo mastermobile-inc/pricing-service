@@ -1095,6 +1095,16 @@ documents:
     status: review
     owner: engineering
     source_of_truth: true
-    related_code: []
-    related_tests: []
-    keywords: [4065, procurement, pricing, bronze, platinum, connector]
+    related_code:
+      - app/api/procurement_pricing.py
+      - app/services/procurement_pricing.py
+      - app/services/procurement_pricing_source.py
+      - app/services/procurement_pricing_exchange.py
+      - ui/src/components/ProcurementPricing.tsx
+    related_tests:
+      - tests/test_procurement_pricing.py
+      - tests/test_procurement_pricing_api.py
+      - tests/test_procurement_pricing_migration.py
+      - tests/test_procurement_pricing_source.py
+      - ui/src/components/ProcurementPricing.test.tsx
+    keywords: ["4065", procurement, pricing, bronze, platinum, connector]

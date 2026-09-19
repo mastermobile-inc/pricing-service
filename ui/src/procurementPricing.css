@@ -1,21 +1,129 @@
-.pricing-workspace {color:var(--text-primary,#243449)}
-.pricing-workspace h1 {margin:0 0 8px;font-size:26px}
-.pricing-filters {display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:18px;background:#f3f6f9;border-radius:12px;margin:20px 0}
-.pricing-filters label,.pricing-actions label {display:flex;flex-direction:column;gap:5px;font-size:13px}
-.pricing-workspace input:not([type=checkbox]),.pricing-workspace select {padding:8px;border:1px solid #b9c7d4;border-radius:6px;min-width:0;background:white;color:#243449}
-.pricing-workspace button {padding:8px 12px;border:1px solid #b9c7d4;border-radius:6px;background:white;color:#28496a;cursor:pointer}
-.pricing-workspace button:disabled {opacity:.55;cursor:default}
-.pricing-workspace button:focus-visible,.pricing-workspace input:focus-visible,.pricing-workspace select:focus-visible {outline:3px solid #3b82f6;outline-offset:2px}
-.pricing-period,.pricing-actions {display:flex;gap:8px;align-items:end;flex-wrap:wrap}
-.pricing-period {grid-column:1/-1}
-.pricing-workspace td {min-width:100px;vertical-align:top}
-.pricing-workspace td:nth-child(2) {min-width:260px}
-.pricing-workspace td input[type=number] {width:112px;display:block;margin-top:6px}
-.pricing-workspace small {display:block;color:#526579;margin-top:4px}
-.pricing-error {padding:12px;background:#fff0ed;color:#942b1d;border-radius:8px}
-.pricing-history {display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:16px;min-width:620px;background:#f4f7fa}
-.pricing-history h3 {grid-column:1/-1}
-.pricing-history svg {width:100%;max-height:180px}
-.pricing-review {padding:18px;border:1px solid #b9c7d4;border-radius:12px;margin:20px 0}
-.pricing-workspace article {padding:12px 0;border-bottom:1px solid #dce4ec}
-@media(max-width:640px){.pricing-filters{grid-template-columns:1fr 1fr}.pricing-workspace h1{font-size:22px}}
+.pricing-workspace {
+  color: var(--text-primary, #243449);
+}
+.pricing-workspace h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+}
+.pricing-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 18px;
+  background: #f3f6f9;
+  border-radius: 12px;
+  margin: 20px 0;
+}
+.pricing-filters label,
+.pricing-actions label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+}
+.pricing-workspace input:not([type="checkbox"]),
+.pricing-workspace select {
+  padding: 8px;
+  border: 1px solid #b9c7d4;
+  border-radius: 6px;
+  min-width: 0;
+  background: white;
+  color: #243449;
+}
+.pricing-workspace button {
+  padding: 8px 12px;
+  border: 1px solid #b9c7d4;
+  border-radius: 6px;
+  background: white;
+  color: #28496a;
+  cursor: pointer;
+}
+.pricing-workspace button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pricing-workspace button:focus-visible,
+.pricing-workspace input:focus-visible,
+.pricing-workspace select:focus-visible {
+  outline: 3px solid #3b82f6;
+  outline-offset: 2px;
+}
+.pricing-period,
+.pricing-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.pricing-period {
+  grid-column: 1/-1;
+}
+.pricing-workspace td {
+  min-width: 100px;
+  vertical-align: top;
+}
+.pricing-workspace td:nth-child(2) {
+  min-width: 260px;
+}
+.pricing-workspace td input[type="number"] {
+  width: 112px;
+  display: block;
+  margin-top: 6px;
+}
+.pricing-workspace small {
+  display: block;
+  color: #526579;
+  margin-top: 4px;
+}
+.pricing-error {
+  padding: 12px;
+  background: #fff0ed;
+  color: #942b1d;
+  border-radius: 8px;
+}
+.pricing-history {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  padding: 16px;
+  min-width: 620px;
+  background: #f4f7fa;
+}
+.pricing-history h3 {
+  grid-column: 1/-1;
+}
+.pricing-history svg {
+  width: 100%;
+  max-height: 180px;
+}
+.pricing-review {
+  padding: 18px;
+  border: 1px solid #b9c7d4;
+  border-radius: 12px;
+  margin: 20px 0;
+}
+.pricing-workspace article {
+  padding: 12px 0;
+  border-bottom: 1px solid #dce4ec;
+}
+@media (max-width: 640px) {
+  .pricing-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pricing-workspace h1 {
+    font-size: 22px;
+  }
+}
+
+.pricing-workspace,
+.pricing-workspace > *,
+.pricing-filters label {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.pricing-filters input,
+.pricing-filters select {
+  width: 100%;
+  box-sizing: border-box;
+}

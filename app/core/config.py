@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -570,7 +571,7 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_pricing_apply_enabled: bool = False
-    procurement_pricing_rules_verified: bool = False
+    procurement_pricing_history_complete_from: date | None = None
     procurement_order_formation_onec_apply_enabled: bool = False
     order_closure_bitrix_enabled: bool = False
     order_closure_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
