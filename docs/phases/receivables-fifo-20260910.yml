@@ -1,0 +1,63 @@
+version: 1
+record_type: phase
+phase_id: receivables-fifo-20260910
+spec: docs/specs/counterparty-folder-recommendations.md
+objective: Подготовить FIFO-погашение старейших документов и единый счетчик дней без изменения production.
+risk: high
+scope:
+  - Каноническое распределение погашений от старых реализаций к новым.
+  - Общий кеш положительных остатков для таблицы и счетчика, защита старой версии кеша.
+  - Подпись поля, регрессии и фиксация подтвержденного решения в двух связанных specs.
+  - Read-only сверка нового расчета на карточке 29 без обновления БД, 1С или Bitrix.
+non_goals:
+  - Git commit/push/merge и переключение production до отдельного подтверждения.
+  - Запись в 1С, отправка SMS, изменение финансового факта, статусов и договорных сроков.
+  - Объявление готовности установки без полного прогона и независимого review.
+dependencies: []
+allowed_paths:
+  - app/services/receivable_canonical_debt_origin.py
+  - app/services/receivable_workplace_cache.py
+  - app/services/receivable_workflow.py
+  - app/services/receivable_workplace.py
+  - scripts/ensure_receivable_bitrix_process.py
+  - tests/test_receivable_fifo.py
+  - tests/test_receivable_workflow.py
+  - tests/test_receivable_workplace.py
+  - tests/test_receivable_bitrix_process.py
+  - tests/test_counterparty_folder_recommendations.py
+  - docs/specs/receivables-smart-process-workflow.md
+  - docs/specs/counterparty-folder-recommendations.md
+  - docs/manifest.yml
+  - docs/phases/receivables-fifo-20260910.yml
+  - docs/evidence/receivables-fifo-20260910.yml
+  - docs/evidence/receivables-fifo-20260910-results.json
+  - docs/reviews/receivables-fifo-20260910.yml
+approval:
+  status: approved
+  approved_by: пользователь текущего диалога
+  approved_at: "2026-09-10T09:12:00+03:00"
+  source: >-
+    Подтверждение «все правильно делай» после выжимки правила FIFO;
+    docs/specs/receivables-smart-process-workflow.md, Decision 2026-09-10.
+    approved_at — время фиксации подтверждения, не время отправки сообщения.
+verification:
+  - id: focused-tests
+    command: TMPDIR=/dev/shm /opt/MM/pricing-service/.venv/bin/python -m pytest tests/test_receivable_fifo.py tests/test_receivable_workflow.py tests/test_receivable_bitrix_process.py tests/test_counterparty_folder_recommendations.py tests/test_receivable_workplace.py -q --tb=short --junitxml=/tmp/mm-fifo-focused-20260910.xml
+    expected_result: Все адресные регрессии проходят, платежи последовательно закрывают старые документы, дни совпадают с таблицей.
+  - id: ruff
+    command: /opt/MM/pricing-service/.venv/bin/python -m ruff check .
+    expected_result: Exit code 0.
+  - id: black
+    command: BLACK_NUM_WORKERS=1 /opt/MM/pricing-service/.venv/bin/python -m black --check .
+    expected_result: Exit code 0.
+  - id: openapi
+    command: /opt/MM/pricing-service/.venv/bin/python scripts/export_openapi.py --check
+    expected_result: Exit code 0; API schema не меняется.
+  - id: full-tests
+    command: TMPDIR=/dev/shm timeout 600 /opt/MM/pricing-service/.venv/bin/python -m pytest -x -q --tb=short --basetemp=/dev/shm/mm-fifo-full-pytest-20260910 --junitxml=/tmp/mm-fifo-full-20260910.xml
+    expected_result: Exit code 0 полного набора; timeout или остановка на ошибке не считаются PASS.
+  - id: project-docs
+    command: python scripts/validate_project_docs.py pricing-service
+    expected_result: Exit code 0 из /opt/MM.
+stop_condition: Завершить подготовку и read-only аудит; не начинать Git-публикацию и production без отдельного подтверждения и устранения proof gaps.
+status: completed

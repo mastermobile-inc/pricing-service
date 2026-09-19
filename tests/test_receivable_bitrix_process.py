@@ -45,6 +45,13 @@ def test_receivable_choice_fields_are_enumerations() -> None:
     assert "last_contact_comment" in visible_fields
 
 
+def test_receivable_age_label_does_not_claim_latest_sale() -> None:
+    specs = {item["logical_key"]: item for item in receivable_setup.CUSTOM_FIELD_SPECS}
+
+    assert specs["age_days"]["title"] == "Дней с самого старого неоплаченного документа"
+    assert specs["age_days"]["type"] == "integer"
+
+
 def test_receivable_category_reuses_default_category(monkeypatch) -> None:
     categories: list[dict[str, Any]] = [
         {

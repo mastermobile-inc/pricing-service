@@ -1,0 +1,32 @@
+version: 1
+record_type: review
+review_id: receivables-fifo-deploy-preflight-20260912-review
+phase_id: receivables-fifo-deploy-preflight-20260912
+spec: docs/specs/counterparty-folder-recommendations.md
+risk: high
+reviewed_at: "2026-09-12T15:30:00+03:00"
+executor:
+  identity: codex-fifo-deploy-20260912
+  context_id: codex-fifo-deploy-20260912-main
+reviewer:
+  identity: codex-independent-fifo-deployment-reviewer
+  context_id: 01a09595-5bcf-7a43-9a77-6840910cf9b2
+  fresh_context: true
+evidence_ids:
+  - receivables-fifo-deploy-20260912-preflight
+criteria:
+  - id: fifo-identity
+    verdict: passed
+    observed_basis: Независимо сверены 10 из 10 SHA-256 Python-файлов с подготовкой 10 сентября; focused.xml содержит 172 passed, из них 24 FIFO.
+  - id: complete-suite
+    verdict: failed
+    observed_basis: full.xml содержит 188 passed и 1 failed; full.log подтверждает остановку после первого сбоя. Остальная часть набора не проверена.
+  - id: baseline
+    verdict: passed
+    observed_basis: active-baseline.xml содержит тот же failure; тест, сервис и CLI ассортимента побайтово одинаковы active/candidate.
+verdict: blocked
+proof_gaps:
+  - Нет полного зеленого прогона на актуальной базе.
+  - Git-публикация, установка и рабочий readback не выполнялись.
+blockers:
+  - Тест ассортимента ожидает new_item, действующий расчет возвращает in_transit; требуется отдельная правка и повторная проверка.
