@@ -308,6 +308,15 @@ def lease_commands(
             (OrderClosureBatch.status == "leased") & (OrderClosureBatch.lease_until < lease_at),
         ),
     ]
+    # Never promote historical v1 batches through the new policy, even if an
+    # operator enables all apply flags. They require a separate manual review.
+    conditions.append(
+        or_(
+            OrderClosureBatch.source_type != "auto_prepay72",
+            (OrderClosureBatch.actor_id == "automation:prepay72:v2")
+            & OrderClosureBatch.source_payload["requires_manual_review"].as_boolean().is_not(True),
+        )
+    )
     conditions.append(
         or_(
             OrderClosureBatch.command_kind == "diagnose",
@@ -328,6 +337,20 @@ def lease_commands(
             continue
         if batch.command_kind == "apply" and batch.status not in {"approved", "leased"}:
             continue
+        if batch.source_type == "auto_prepay72" and batch.command_kind == "apply":
+            from app.schemas.order_prepay_expiry import SitePrepaySnapshot
+            from app.services.order_prepay_expiry import site_blocker
+
+            snapshot = SitePrepaySnapshot.model_validate(batch.source_payload["site_snapshot"])
+            blocker = site_blocker(snapshot, lease_at)
+            if snapshot.closure_hold is None:
+                blocker = blocker or "payment_closure_hold_missing"
+            if blocker:
+                batch.status = "stale"
+                batch.command_kind = None
+                batch.last_error_code = blocker
+                _event(session, batch, "automatic_lease_blocked", "onec:ut103", {"reason": blocker})
+                continue
         batch.status = "leased"
         batch.lease_token = secrets.token_hex(24)
         batch.lease_until = lease_at + timedelta(seconds=LEASE_SECONDS)

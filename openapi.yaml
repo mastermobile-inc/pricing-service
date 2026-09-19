@@ -28641,6 +28641,99 @@ components:
       - page_size
       - total
       title: PaginatedProducts
+    PaymentAvailabilityClock:
+      properties:
+        policy:
+          type: string
+          const: web_prepay_72h_v2
+          title: Policy
+        source:
+          anyOf:
+          - type: string
+            const: site_gate_v1
+          - type: 'null'
+          title: Source
+        valid_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Valid Until
+        enrollment_id:
+          type: string
+          format: uuid
+          title: Enrollment Id
+        enrolled_at:
+          type: string
+          format: date-time
+          title: Enrolled At
+        events:
+          items:
+            $ref: '#/components/schemas/PaymentAvailabilityEvent'
+          type: array
+          maxItems: 512
+          minItems: 1
+          title: Events
+      additionalProperties: false
+      type: object
+      required:
+      - policy
+      - enrollment_id
+      - enrolled_at
+      - events
+      title: PaymentAvailabilityClock
+    PaymentAvailabilityEvent:
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          title: Event Id
+        sequence:
+          type: integer
+          minimum: 1.0
+          title: Sequence
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        available:
+          type: boolean
+          title: Available
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - sequence
+      - occurred_at
+      - available
+      title: PaymentAvailabilityEvent
+      description: A persisted site transition, not a browser timestamp or a reserve date.
+    PaymentClosureHold:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        batch_id:
+          type: string
+          format: uuid
+          title: Batch Id
+        frozen_at:
+          type: string
+          format: date-time
+          title: Frozen At
+        clock_revision:
+          type: integer
+          minimum: 1.0
+          title: Clock Revision
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - batch_id
+      - frozen_at
+      - clock_revision
+      title: PaymentClosureHold
     PrepayKnownResponse:
       properties:
         site_order_ids:
@@ -28681,6 +28774,7 @@ components:
           type: string
           enum:
           - refresh
+          - prepare_closure
           - cancel_site
           - manual_review
           - complete
@@ -28711,6 +28805,12 @@ components:
         payment_system_id:
           type: integer
           title: Payment System Id
+        expected_clock_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Expected Clock Id
       type: object
       required:
       - batch_id
@@ -36370,6 +36470,18 @@ components:
           type: string
           pattern: ^[1-9][0-9]{0,11}$
           title: Site Order Id
+        payment_clock:
+          anyOf:
+          - $ref: '#/components/schemas/PaymentAvailabilityClock'
+          - type: 'null'
+        closure_hold:
+          anyOf:
+          - $ref: '#/components/schemas/PaymentClosureHold'
+          - type: 'null'
+        payment_started:
+          type: boolean
+          title: Payment Started
+          default: false
         created_at:
           type: string
           format: date-time
