@@ -8153,6 +8153,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/order-status:
+    get:
+      summary: Item Order Status
+      description: 'Где сейчас заказ клиента — для подсказки «Где заказ» во вкладке переписки.
+
+
+        Право на запись не требуется: это чтение, и видеть статус полезно всем, кто
+
+        открыл карточку.'
+      operationId: item_order_status_api_site_service_requests_ui_items__item_id__order_status_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestOrderStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/card-balance-reconciliation/events:
     get:
       summary: List Events
@@ -37234,6 +37266,54 @@ components:
       - clientRequestId
       - text
       title: SiteServiceRequestInternalNoteRequest
+    SiteServiceRequestOrderStatusResponse:
+      properties:
+        dealId:
+          type: integer
+          title: Dealid
+        orderRef:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Orderref
+        tracking:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tracking
+        statusText:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Statustext
+        trackingLink:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trackinglink
+        plannedDeliveryDate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Planneddeliverydate
+        storageDate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Storagedate
+        multipleShipments:
+          type: boolean
+          title: Multipleshipments
+          default: false
+        customerMessage:
+          type: string
+          title: Customermessage
+          default: ''
+      type: object
+      required:
+      - dealId
+      title: SiteServiceRequestOrderStatusResponse
+      description: Где сейчас заказ клиента — для подсказки «Где заказ» во вкладке переписки.
     SiteServiceRequestReturnCreateRequest:
       properties:
         carrier:

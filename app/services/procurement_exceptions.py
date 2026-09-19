@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Iterable
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -19,8 +16,8 @@ from app.services.procurement_supply_scenarios import (
     price_confirmed,
     supply_review_valid,
 )
+from app.services.work_calendar import MOSCOW, next_working_day, to_moscow
 
-MOSCOW = ZoneInfo("Europe/Moscow")
 TITLES = {
     "supply_confirmation_required": "Проверить сомнительную поставку и количество закупки",
     "stockout_risk": "Товар может закончиться до поступления",
@@ -40,26 +37,16 @@ def utc_naive(value: datetime) -> datetime:
 
 
 def reaction_deadline(now: datetime, *, calendar: dict | None = None) -> datetime:
-    if calendar is None:
-        calendar = json.loads(
-            (
-                Path(__file__).resolve().parents[2] / "config/procurement-work-calendar.json"
-            ).read_text()
-        )
-    local = (
-        now.replace(tzinfo=UTC).astimezone(MOSCOW) if now.tzinfo is None else now.astimezone(MOSCOW)
-    )
-    day = local.date() + timedelta(days=1)
-    while True:
-        year = calendar["years"].get(str(day.year))
-        if year is None:
-            raise ValueError(f"Производственный календарь на {day.year} год не настроен")
-        working = day.isoformat() in year.get("working_weekends", []) or (
-            day.weekday() < 5 and day.isoformat() not in year["holidays"]
-        )
-        if working:
-            return datetime.combine(day, time(18), MOSCOW).astimezone(UTC).replace(tzinfo=None)
-        day += timedelta(days=1)
+    """Срок первичной реакции: 18:00 МСК ближайшего рабочего дня после `now`.
+
+    Рабочие дни берутся из общего производственного календаря
+    (`app/services/work_calendar.py`), год без настроек по-прежнему даёт
+    `ValueError` — выдумывать переносы нельзя.
+    """
+
+    local = to_moscow(now)
+    day = next_working_day(local.date() + timedelta(days=1), calendar=calendar)
+    return datetime.combine(day, time(18), MOSCOW).astimezone(UTC).replace(tzinfo=None)
 
 
 def exception_facts(order: Order, *, now: datetime) -> Iterable[tuple[str, int | None, dict]]:

@@ -29,8 +29,10 @@ def test_working_weekend_override():
 
 
 def test_unknown_calendar_is_not_invented():
-    with pytest.raises(ValueError, match="2027"):
-        reaction_deadline(datetime(2026, 12, 31))
+    # Год без постановления о переносах не достраивается: 2026 и 2027 настроены,
+    # 2028 — нет, и срок реакции честно падает вместо выдуманной даты.
+    with pytest.raises(ValueError, match="2028"):
+        reaction_deadline(datetime(2027, 12, 31))
 
 
 def test_supply_categories_and_horizon_boundaries():
