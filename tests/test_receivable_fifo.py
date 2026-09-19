@@ -37,6 +37,104 @@ def _sale(document_ref: str, day: int, amount: str) -> CanonicalDebtSaleCandidat
     )
 
 
+def _dated_sale(
+    document_ref: str,
+    document_number: str,
+    document_date: datetime,
+    amount: str,
+) -> CanonicalDebtSaleCandidate:
+    return CanonicalDebtSaleCandidate(
+        document_ref=document_ref,
+        document_number=document_number,
+        document_date=document_date,
+        gross_amount=Decimal(amount),
+    )
+
+
+def test_task43_fifo_moves_origin_after_large_payment_for_rb030540() -> None:
+    sales = [
+        _dated_sale("closed-history", "СТАРЫЙ-МАССИВ", datetime(2026, 8, 15), "50000"),
+        _dated_sale("anchor", "РБГУ0416825", datetime(2026, 8, 30, 15, 41, 18), "4390"),
+        _dated_sale("sale-2", "РБГУ0417980", datetime(2026, 8, 31, 11, 25, 57), "330"),
+        _dated_sale("sale-3", "РБГУ0417983", datetime(2026, 8, 31, 11, 26, 11), "1220"),
+        _dated_sale("sale-4", "РБГУ0433901", datetime(2026, 9, 7, 13, 17, 13), "1440"),
+        _dated_sale("sale-5", "РБГУ0445365", datetime(2026, 9, 12, 15, 11, 57), "1090"),
+        _dated_sale("sale-6", "РБГУ0445714", datetime(2026, 9, 12, 16, 48, 52), "980"),
+        _dated_sale("sale-7", "РБГУ0448113", datetime(2026, 9, 13, 18, 27, 15), "21990"),
+        _dated_sale("sale-8", "РБГУ0453603", datetime(2026, 9, 16, 13, 30, 9), "7230"),
+        _dated_sale("sale-9", "РБГУ0456353", datetime(2026, 9, 17, 15, 58, 3), "3620"),
+        _dated_sale("sale-10", "РБГУ0456404", datetime(2026, 9, 17, 16, 13, 38), "1990"),
+    ]
+    resolution = resolve_canonical_debt_origin(
+        opening_period=date(2026, 8, 1),
+        opening_balance=Decimal("0"),
+        daily_movements={
+            date(2026, 8, 15): Decimal("50000"),
+            date(2026, 8, 30): Decimal("4390"),
+            date(2026, 8, 31): Decimal("1550"),
+            date(2026, 9, 7): Decimal("-51122"),
+            date(2026, 9, 12): Decimal("2070"),
+            date(2026, 9, 13): Decimal("21990"),
+            date(2026, 9, 16): Decimal("7230"),
+            date(2026, 9, 17): Decimal("5610"),
+        },
+        sale_candidates=sales,
+        current_balance=Decimal("41718"),
+    )
+
+    assert resolution.status == CANONICAL_DEBT_STATUS_MATCHED
+    assert resolution.documents[0].document_number == "РБГУ0416825"
+    assert resolution.documents[0].open_amount == Decimal("1828.00")
+    assert all(document.document_number != "СТАРЫЙ-МАССИВ" for document in resolution.documents)
+    assert sum(
+        (document.open_amount for document in resolution.documents), Decimal("0")
+    ) == Decimal("41718.00")
+
+
+def test_task43_fifo_removes_year_old_origin_for_rb003879() -> None:
+    resolution = resolve_canonical_debt_origin(
+        opening_period=date(2025, 10, 1),
+        opening_balance=Decimal("0"),
+        daily_movements={
+            date(2025, 10, 28): Decimal("26790"),
+            date(2026, 9, 12): Decimal("-26810"),
+            date(2026, 9, 13): Decimal("4280"),
+            date(2026, 9, 14): Decimal("2590"),
+            date(2026, 9, 15): Decimal("50"),
+            date(2026, 9, 16): Decimal("50"),
+            date(2026, 9, 17): Decimal("7680"),
+        },
+        sale_candidates=[
+            _dated_sale("old", "СТАРЫЙ-ДОЛГ", datetime(2025, 10, 28), "26790"),
+            _dated_sale("anchor", "РБГУ0446741", datetime(2026, 9, 13, 12, 12, 19), "610"),
+            _dated_sale("sale-2", "РБГУ0447139", datetime(2026, 9, 13, 13, 55, 55), "1160"),
+            _dated_sale("sale-3", "РБГУ0447227", datetime(2026, 9, 13, 14, 18, 22), "320"),
+            _dated_sale("sale-4", "РБГУ0448041", datetime(2026, 9, 13, 18, 1, 48), "2190"),
+            _dated_sale("sale-5", "РБГУ0449158", datetime(2026, 9, 14, 13, 23, 11), "2590"),
+            _dated_sale("sale-6", "РБГУ0451561", datetime(2026, 9, 15, 14, 4, 58), "50"),
+            _dated_sale("sale-7", "РБГУ0453974", datetime(2026, 9, 16, 15, 11, 22), "50"),
+            _dated_sale("sale-8", "РБГУ0456208", datetime(2026, 9, 17, 15, 18, 42), "2190"),
+            _dated_sale("sale-9", "РБГУ0456407", datetime(2026, 9, 17, 16, 14, 13), "5490"),
+        ],
+        current_balance=Decimal("14630"),
+    )
+
+    assert resolution.status == CANONICAL_DEBT_STATUS_MATCHED
+    assert [document.document_number for document in resolution.documents][0] == "РБГУ0446741"
+    assert resolution.documents[0].open_amount == Decimal("590.00")
+    assert all(document.document_number != "СТАРЫЙ-ДОЛГ" for document in resolution.documents)
+    assert (
+        debt_age_days(
+            [
+                {"document_date": document.document_date, "open_amount": document.open_amount}
+                for document in resolution.documents
+            ],
+            as_of=date(2026, 9, 17),
+        )
+        == 4
+    )
+
+
 @pytest.mark.parametrize(
     ("paid", "expected_documents", "expected_age"),
     [
