@@ -124,9 +124,10 @@ def _period(codes, start, end):
     # Aggregate the entire catalog once per period; never repeat scans per page/SKU.
     from app.services.procurement_order_metrics import DEFECT_REASON_SQL
 
+    # Native storage metadata: _Fld4979 is line amount; _Fld4982 is unit price.
     statements = [
         """SELECT RTRIM(product._Code) code, SUM(sale_line._Fld4971) sales_qty,
-           SUM(sale_line._Fld4982) sales_amount FROM _Document203 sale
+           SUM(sale_line._Fld4979) sales_amount FROM _Document203 sale
            JOIN _Document203_VT4966 sale_line ON sale_line._Document203_IDRRef=sale._IDRRef
            JOIN _Reference62 product ON product._IDRRef=sale_line._Fld4974RRef
            WHERE sale._Marked=0x00 AND sale._Posted=0x01 AND sale_line._Fld4971>0

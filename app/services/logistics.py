@@ -25,6 +25,7 @@ from app.models import (
     LogisticsUser,
     LogisticsWarehouse,
 )
+from app.models.logistics_accounting import LogisticsAccountingEvent
 from app.services import logistics_accounting, site_order_fulfillment
 
 ROLE_SENDER = {"sender", "logist", "admin"}
@@ -1989,6 +1990,31 @@ def acknowledge_accounting(session: Session, event_id: str, ack) -> dict:
     return {"event_id": row.event_id, "status": row.status, "result": row.result}
 
 
+def _reconcile_scan_accounting_progress(session: Session, plan: LogisticsOrderPlan) -> None:
+    """Replay the existing receipt fact after a fresh snapshot, never new stock work."""
+    if (plan.payload or {}).get("accounting_protocol") != logistics_accounting.PROTOCOL:
+        return
+    event = session.scalar(
+        select(LogisticsTransferEvent)
+        .join(
+            LogisticsAccountingEvent,
+            LogisticsAccountingEvent.physical_event_id == LogisticsTransferEvent.id,
+        )
+        .join(LogisticsOrderPlanUnit, LogisticsOrderPlanUnit.id == LogisticsAccountingEvent.unit_id)
+        .where(
+            LogisticsOrderPlanUnit.plan_id == plan.id,
+            LogisticsAccountingEvent.operation == "final_receipt",
+            LogisticsAccountingEvent.status == "applied",
+        )
+        .order_by(LogisticsTransferEvent.id.desc())
+        .limit(1)
+    )
+    if event is not None:
+        transfer = session.get(LogisticsTransfer, event.transfer_id)
+        if transfer is not None:
+            _bridge_order_transfer_progress(session, transfer=transfer, event=event)
+
+
 def _order_plan_payload(existing: dict | None, incoming: dict | None) -> dict | None:
     """Keep backend-owned facts while applying the latest read-only 1C snapshot."""
 
@@ -2177,6 +2203,7 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
             if unit.unit_key not in incoming_keys:
                 session.delete(unit)
         session.flush()
+        _reconcile_scan_accounting_progress(session, row)
     session.commit()
     return counters.__dict__
 

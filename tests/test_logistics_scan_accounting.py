@@ -1,6 +1,7 @@
 """Scan-led protocol exercises real API transactions; no 1C or CRM writes."""
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,8 +11,14 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db, get_engine
 from app.core.config import get_settings
 from app.main import app
-from app.models import LogisticsManualReview, LogisticsOrderPlanUnit
+from app.models import (
+    LogisticsManualReview,
+    LogisticsOrderPlan,
+    LogisticsOrderPlanUnit,
+    LogisticsTransfer,
+)
 from app.models.logistics_accounting import LogisticsAccountingEvent, LogisticsReceiptCheck
+from app.models.site_order_fulfillment import SiteOrderExecutionEvent
 from app.services import logistics_accounting as accounting
 from tests.test_logistics_api import (
     _configure_logistics_auth,
@@ -161,6 +168,57 @@ def test_scan_receipt_requires_count_and_accounting_ack(flow):
         client.post("/api/logistics/sync/order-plans", json=[plan], headers=headers).status_code
         == 409
     )
+
+
+def test_delayed_ack_reconciles_on_fresh_plan_without_duplicate_events(flow):
+    client, headers, engine, ids, plan = flow
+    with Session(engine) as session:
+        session.get(LogisticsTransfer, ids["transfer_id"]).site_order_number = "test-1"
+        session.commit()
+    assert (
+        confirm(flow, draft(flow, "handoffs", "Отправитель", "store-1", "central")).status_code
+        == 200
+    )
+    receipt = draft(flow, "receipts", "Получатель", "central")
+    assert (
+        confirm(
+            flow,
+            receipt,
+            receipts=[
+                {
+                    "transfer_id": ids["transfer_id"],
+                    "lines": [{"line_key": "row-1", "quantity": "2"}],
+                }
+            ],
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        stored_plan = session.scalar(select(LogisticsOrderPlan))
+        stored_plan.synced_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        plan_id = stored_plan.id
+        session.commit()
+    for operation in ("dispatch", "final_receipt"):
+        event = client.get("/api/logistics/accounting/events", headers=headers).json()[0]
+        assert event["operation"] == operation
+        response = client.post(
+            f"/api/logistics/accounting/events/{event['event_id']}/ack",
+            json={"status": "applied", "documents": ["onec:" + operation]},
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+    selector = select(SiteOrderExecutionEvent).where(
+        SiteOrderExecutionEvent.source_ref
+        == f"logistics_order_plan:{plan_id}:all_accepted_at_final"
+    )
+    with Session(engine) as session:
+        assert session.scalars(selector).all() == []
+    for _ in range(2):
+        response = client.post("/api/logistics/sync/order-plans", json=[plan], headers=headers)
+        assert response.status_code == 200, response.text
+    with Session(engine) as session:
+        assert len(session.scalars(selector).all()) == 1
+        assert len(session.scalars(select(LogisticsAccountingEvent)).all()) == 2
 
 
 @pytest.mark.parametrize("quantity,damaged", [("1", False), ("3", False), ("2", True)])
