@@ -1,0 +1,37 @@
+version: 1
+record_type: evidence
+evidence_id: customer-price-type-search-task-2169-20260912-production
+phase_id: customer-price-type-search-task-2169-deploy-20260912
+spec: docs/specs/customer-price-type-management-v1.md
+observed_at: "2026-09-12T22:57:24+03:00"
+environment:
+  workspace: /tmp/pricing-release-2169-MooMYC
+  source_commit: 909c50932ae989d82db6404654b706a7c5a0847d
+  runtime: /opt/MM/releases/pricing-service/customer-price-search-2169-20260912
+result: passed
+verifications:
+  - id: release-deploy
+    command: /usr/local/sbin/mm-pricing-service-release deploy --source-root /tmp/pricing-release-2169-MooMYC --release-name customer-price-search-2169-20260912
+    exit_code: 0
+    observed_result: Immutable release собран, проверки OpenAPI и миграций прошли, runtime smoke завершился успешно после окна перезапуска.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: release-status
+    command: /usr/local/sbin/mm-pricing-service-release status
+    exit_code: 0
+    observed_result: Активный и canonical commit совпадают с 909c50932ae989d82db6404654b706a7c5a0847d; strict=true, freeze отсутствует.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: service-status
+    command: systemctl is-active pricing-service.service
+    exit_code: 0
+    observed_result: Служба active, ExecMainStatus=0.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: live-asset
+    command: rg -n "Поиск по всему портфелю|Клиент найден в портфеле" /opt/MM/pricing-service-task43-current/ui/dist/assets
+    exit_code: 0
+    observed_result: Обе новые пользовательские строки присутствуют в активном CustomerPriceTypesWorkspace bundle.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
+  - id: production-data-readback
+    command: /opt/MM/pricing-service-task43-current/.venv/bin/python -c "read-only query for РБ002793"
+    exit_code: 0
+    observed_result: Клиент найден; текущий тип 4.Золотой, source_status=conflict, case_type=data_check, причина source_mismatch.
+    artifact: docs/evidence/customer-price-type-search-task-2169-20260912-results.md
